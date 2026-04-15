@@ -1,0 +1,11 @@
+FROM golang:1.24-alpine AS build
+RUN apk add --no-cache git ca-certificates && update-ca-certificates
+WORKDIR /app
+COPY . .
+RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /towel-backend .
+
+FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build /towel-backend /usr/local/bin/towel-backend
+EXPOSE 8000
+ENTRYPOINT ["/usr/local/bin/towel-backend"]

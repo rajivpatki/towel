@@ -1,0 +1,429 @@
+:root {
+  --radius-sm: 14px;
+  --radius-md: 20px;
+  --radius-lg: 28px;
+  --radius-xl: 36px;
+  --shadow-sm: 0 8px 24px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 18px 40px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 28px 60px rgba(15, 23, 42, 0.08);
+  --shadow-float: 0 32px 80px rgba(15, 23, 42, 0.1);
+}
+
+html {
+  background: #f5f7fb;
+}
+
+body {
+  position: relative;
+  overflow-x: hidden;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 246, 251, 0.98)),
+    #f5f7fb;
+}
+
+body::before,
+body::after {
+  content: '';
+  position: fixed;
+  inset: auto;
+  pointer-events: none;
+  z-index: 0;
+  border-radius: 999px;
+  filter: blur(12px);
+  opacity: 0.8;
+}
+
+body::before {
+  width: 26rem;
+  height: 26rem;
+  top: -6rem;
+  right: -6rem;
+  background: radial-gradient(circle, rgba(100, 210, 255, 0.18), rgba(100, 210, 255, 0));
+  animation: float-orb-a 18s ease-in-out infinite alternate;
+}
+
+body::after {
+  width: 22rem;
+  height: 22rem;
+  bottom: -5rem;
+  left: -4rem;
+  background: radial-gradient(circle, rgba(191, 90, 242, 0.12), rgba(191, 90, 242, 0));
+  animation: float-orb-b 22s ease-in-out infinite alternate;
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  min-height: 48px;
+  padding: 0.75rem 1.25rem;
+  border-radius: 999px;
+  box-shadow: 0 10px 28px rgba(0, 113, 227, 0.16);
+}
+
+button.secondary {
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: none;
+}
+
+input,
+select,
+textarea,
+.chat-input,
+.preference-input {
+  min-height: 52px;
+  padding: 0.9rem 1.15rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 4px 14px rgba(15, 23, 42, 0.03);
+  backdrop-filter: blur(10px);
+}
+
+textarea,
+.chat-input,
+.preference-input {
+  border-radius: 28px;
+}
+
+.chat-input,
+.preference-input {
+  min-height: 56px;
+}
+
+.preference-input {
+  min-height: 132px;
+}
+
+input:focus,
+select:focus,
+textarea:focus,
+.chat-input:focus,
+.preference-input:focus {
+  box-shadow: 0 0 0 4px rgba(0, 113, 227, 0.12), 0 14px 30px rgba(0, 113, 227, 0.08);
+}
+
+.page-shell,
+.main-content,
+.wizard-container {
+  position: relative;
+}
+
+.loading-card,
+.hero-card,
+.panel,
+.wizard-card,
+.chat-header,
+.chat-input-container,
+.history-item,
+.preference-item,
+.info-box,
+.agent-card,
+.tool-card {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+
+.wizard-card {
+  position: relative;
+  border-radius: 34px;
+  padding: 2.75rem;
+}
+
+.instruction-box {
+  border-radius: 30px;
+  border: 1px solid rgba(0, 113, 227, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(240, 247, 255, 0.9));
+}
+
+.note {
+  border-left: none;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.sidebar {
+  width: 232px;
+  background: rgba(255, 255, 255, 0.68);
+  border-right: 1px solid rgba(255, 255, 255, 0.72);
+  box-shadow: 20px 0 60px rgba(15, 23, 42, 0.03);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+
+.sidebar-header {
+  padding: 1.75rem 1.35rem 1.5rem;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.nav-link {
+  min-height: 48px;
+  padding: 0.8rem 1rem;
+  border-radius: 18px;
+}
+
+.nav-link.active {
+  background: linear-gradient(180deg, #0a84ff, #0071e3);
+  box-shadow: 0 14px 26px rgba(0, 113, 227, 0.2);
+}
+
+.main-content {
+  margin-left: 232px;
+  padding: 2.75rem 3.25rem;
+}
+
+.chat-container {
+  gap: 1.25rem;
+}
+
+.message-content {
+  border-radius: 24px;
+}
+
+.message.user .message-content {
+  box-shadow: 0 12px 30px rgba(0, 113, 227, 0.18);
+}
+
+.preferences-container,
+.chat-container,
+.history-list,
+.wizard-container {
+  animation: fadeInUp 420ms ease;
+}
+
+.toast-viewport {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: min(360px, calc(100vw - 32px));
+}
+
+.toast-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.9rem;
+  padding: 0.95rem 1rem;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(20px) saturate(160%);
+  animation: toast-in 220ms ease;
+}
+
+.toast-card strong {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--color-text-primary);
+  font-size: 0.93rem;
+}
+
+.toast-card p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.toast-card.success {
+  box-shadow: 0 18px 40px rgba(52, 199, 89, 0.16);
+}
+
+.toast-card.error {
+  box-shadow: 0 18px 40px rgba(255, 59, 48, 0.14);
+}
+
+.toast-card.info {
+  box-shadow: 0 18px 40px rgba(0, 113, 227, 0.16);
+}
+
+.toast-dismiss {
+  min-height: 32px;
+  width: 32px;
+  padding: 0;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--color-text-secondary);
+  box-shadow: none;
+  flex-shrink: 0;
+}
+
+.toast-dismiss:hover {
+  background: rgba(15, 23, 42, 0.1);
+}
+
+@keyframes float-orb-a {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(-28px, 18px, 0) scale(1.08);
+  }
+}
+
+@keyframes float-orb-b {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(24px, -16px, 0) scale(1.06);
+  }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.back-button {
+  position: absolute;
+  top: 1.25rem;
+  left: 1.25rem;
+  width: 40px;
+  height: 40px;
+  min-height: unset;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  color: var(--color-text-secondary);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+  transition: all 200ms ease;
+}
+
+.back-button:hover {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(15, 23, 42, 0.12);
+  color: var(--color-text-primary);
+  transform: translateX(-2px);
+}
+
+.back-button:active {
+  transform: scale(0.95);
+}
+
+.google-login-container {
+  display: flex;
+  justify-content: center;
+  padding: 0.5rem 0;
+}
+
+.google-login-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1.5rem 2rem;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.04);
+  min-width: 280px;
+}
+
+.google-login-hint {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.google-one-tap-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: 44px;
+  padding: 0.625rem 1.25rem;
+  background: #ffffff;
+  border: 1px solid #dadce0;
+  border-radius: 999px;
+  color: #3c4043;
+  font-size: 0.875rem;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.1);
+  transition: all 200ms ease;
+}
+
+.google-one-tap-btn:hover:not(:disabled) {
+  background: #f8f9fa;
+  border-color: #d2e3fc;
+  box-shadow: 0 1px 4px rgba(60, 64, 67, 0.15);
+}
+
+.google-one-tap-btn:active:not(:disabled) {
+  background: #f1f3f4;
+  box-shadow: 0 1px 2px rgba(60, 64, 67, 0.1);
+  transform: scale(0.99);
+}
+
+.google-one-tap-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.google-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+@media (max-width: 960px) {
+  .sidebar {
+    width: 208px;
+  }
+
+  .main-content {
+    margin-left: 208px;
+    padding: 1.75rem;
+  }
+}
+
+@media (max-width: 768px) {
+  .toast-viewport {
+    right: 12px;
+    bottom: 12px;
+    width: min(360px, calc(100vw - 24px));
+  }
+
+  .wizard-card {
+    padding: 1.6rem;
+    border-radius: 26px;
+  }
+
+  .sidebar {
+    width: 60px;
+  }
+
+  .main-content {
+    margin-left: 60px;
+    padding: 1rem;
+  }
+}

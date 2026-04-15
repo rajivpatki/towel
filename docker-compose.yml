@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: ./backend_go
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/towel.db
+      DATA_DIR: /data
+      PUBLIC_API_BASE_URL: http://localhost:8000
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    volumes:
+      - towel_data:/data
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+
+volumes:
+  towel_data:
