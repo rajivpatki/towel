@@ -13,3 +13,14 @@ To build:
 docker build -t towel .
 docker run -P 3000:3000 -p 8000:8000 -v insert_email_id_here:/data towel
 ```
+
+
+Build Win exe:
+
+```
+npm run build:backend:win
+npm --prefix frontend run build
+npx electron-builder --win --dir
+```
+
+File at `D:\Projects\Jodaro\towel\dist\win-unpacked\Towel.exe`

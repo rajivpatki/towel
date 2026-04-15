@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -88,14 +87,14 @@ func (a *App) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(r.URL.Query().Get("code"))
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
 	if code == "" || state == "" {
-		http.Redirect(w, r, "http://localhost:3000/setup/gmail?oauth=error&msg=OAuth+callback+is+missing+required+query+parameters", http.StatusSeeOther)
+		http.Redirect(w, r, "towel://setup/gmail?oauth=error&msg=OAuth+callback+is+missing+required+query+parameters", http.StatusSeeOther)
 		return
 	}
 	if err := a.completeGoogleOAuthCallback(code, state); err != nil {
-		http.Redirect(w, r, "http://localhost:3000/setup/gmail?oauth=error&msg="+html.EscapeString(err.Error()), http.StatusSeeOther)
+		http.Redirect(w, r, "towel://setup/gmail?oauth=error&msg="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, frontendSetupURL+"?oauth=success", http.StatusSeeOther)
+	http.Redirect(w, r, "towel://setup/gmail?oauth=success", http.StatusSeeOther)
 }
 
 func (a *App) handleSaveLLMSetup(w http.ResponseWriter, r *http.Request) {

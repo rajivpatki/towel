@@ -28,7 +28,6 @@ function GmailConnect({ onStatusChange }) {
   const { showToast } = useToast()
   const [status, setStatus] = useState(null)
   const [busy, setBusy] = useState(false)
-  const [polling, setPolling] = useState(false)
 
   const loadStatus = useCallback(async () => {
     const response = await fetch(`${apiBaseUrl}/api/setup/status`)
@@ -44,12 +43,23 @@ function GmailConnect({ onStatusChange }) {
 
     if (oauthResult === 'success') {
       setSearchParams({}, { replace: true })
-      setPolling(true)
-      showToast({
-        tone: 'info',
-        title: 'Finishing Gmail authorization',
-        description: 'Confirming the connection with Google.'
-      })
+      loadStatus()
+        .then(async (freshStatus) => {
+          await onStatusChange?.()
+          showToast({
+            tone: 'success',
+            title: 'Gmail connected',
+            description: freshStatus?.google_email || 'Your Google account is ready.'
+          })
+          setTimeout(() => navigate('/setup/llm'), 400)
+        })
+        .catch((err) => {
+          showToast({
+            tone: 'error',
+            title: 'Unable to confirm Gmail authorization',
+            description: err.message
+          })
+        })
     } else if (oauthResult === 'error') {
       setSearchParams({}, { replace: true })
       showToast({
@@ -58,7 +68,7 @@ function GmailConnect({ onStatusChange }) {
         description: errorMsg || 'Authorization failed'
       })
     }
-  }, [searchParams, setSearchParams, showToast])
+  }, [searchParams, setSearchParams, showToast, loadStatus, onStatusChange, navigate])
 
   useEffect(() => {
     loadStatus().catch((err) => {
@@ -69,29 +79,6 @@ function GmailConnect({ onStatusChange }) {
       })
     })
   }, [loadStatus, showToast])
-
-  useEffect(() => {
-    if (!polling) return
-
-    const interval = setInterval(async () => {
-      try {
-        const freshStatus = await loadStatus()
-        if (freshStatus?.google_account_connected) {
-          setPolling(false)
-          await onStatusChange?.()
-          showToast({
-            tone: 'success',
-            title: 'Gmail connected',
-            description: freshStatus.google_email || 'Your Google account is ready.'
-          })
-          setTimeout(() => navigate('/setup/llm'), 800)
-        }
-      } catch {
-      }
-    }, 1500)
-
-    return () => clearInterval(interval)
-  }, [polling, loadStatus, navigate, onStatusChange, showToast])
 
   async function connectGoogle() {
     setBusy(true)
@@ -112,6 +99,7 @@ function GmailConnect({ onStatusChange }) {
         title: 'Unable to start Gmail authorization',
         description: err.message
       })
+    } finally {
       setBusy(false)
     }
   }

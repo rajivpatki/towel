@@ -1,14 +1,130 @@
 const { app, BrowserWindow, dialog } = require('electron');
+const { shell } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
 let mainWindow;
 let backendProcess;
+let pendingRoute = '';
+
+const isWindows = process.platform === 'win32';
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
+
+function getFrontendPath() {
+  return path.join(__dirname, 'frontend', 'dist', 'index.html');
+}
+
+function normalizeRoute(route) {
+  if (!route) {
+    return '';
+  }
+
+  return route.startsWith('/') ? route : `/${route}`;
+}
+
+function parseDeepLink(argvOrUrl) {
+  const candidate = Array.isArray(argvOrUrl)
+    ? argvOrUrl.find((value) => typeof value === 'string' && value.startsWith('towel://'))
+    : argvOrUrl;
+
+  if (!candidate) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    const route = `${parsed.host ? `/${parsed.host}` : ''}${parsed.pathname || ''}${parsed.search || ''}`;
+    return normalizeRoute(route);
+  } catch (err) {
+    console.error('Failed to parse deep link URL:', err);
+    return '';
+  }
+}
+
+function registerProtocol() {
+  if (app.isPackaged) {
+    app.setAsDefaultProtocolClient('towel');
+    return;
+  }
+
+  if (process.defaultApp && process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('towel', process.execPath, [path.resolve(process.argv[1])]);
+    return;
+  }
+
+  app.setAsDefaultProtocolClient('towel');
+}
+
+function loadAppRoute(route = '') {
+  const frontendPath = getFrontendPath();
+  const normalizedRoute = normalizeRoute(route);
+
+  if (!fs.existsSync(frontendPath)) {
+    console.error('Frontend not found at:', frontendPath);
+    dialog.showErrorBox('Frontend Error', `Frontend not found at: ${frontendPath}`);
+    return;
+  }
+
+  const loadOptions = normalizedRoute ? { hash: normalizedRoute } : undefined;
+  mainWindow.loadFile(frontendPath, loadOptions).catch((err) => {
+    console.error('Failed to load frontend:', err);
+  });
+}
+
+function handleAppRoute(route) {
+  const normalizedRoute = normalizeRoute(route);
+  if (!normalizedRoute) {
+    return;
+  }
+
+  pendingRoute = normalizedRoute;
+  if (!mainWindow) {
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  mainWindow.focus();
+  loadAppRoute(normalizedRoute);
+}
+
+function handleDeepLink(url) {
+  const route = parseDeepLink(url);
+  if (!route) {
+    return;
+  }
+
+  handleAppRoute(route);
+}
+
+app.on('second-instance', (_event, argv) => {
+  const route = parseDeepLink(argv);
+  if (!route) {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore();
+      }
+      mainWindow.focus();
+    }
+    return;
+  }
+
+  handleAppRoute(route);
+});
+
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleDeepLink(url);
+});
 
 function getBackendPath() {
-  const isWin = process.platform === 'win32';
-  const binaryName = isWin ? 'backend-server.exe' : 'backend-server';
+  const binaryName = isWindows ? 'backend-server.exe' : 'backend-server';
 
   // When packaged by electron-builder, extraResources go to process.resourcesPath
   if (app.isPackaged) {
@@ -75,15 +191,26 @@ function createWindow() {
     }
   });
 
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) {
+      shell.openExternal(url);
+      return { action: 'deny' };
+    }
+
+    return { action: 'allow' };
+  });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (/^https?:\/\//i.test(url)) {
+      event.preventDefault();
+      shell.openExternal(url);
+    }
+  });
+
   // 4. Wait a moment for backend to start, then load frontend
   setTimeout(() => {
-    const frontendPath = path.join(__dirname, 'frontend', 'dist', 'index.html');
-    if (fs.existsSync(frontendPath)) {
-      mainWindow.loadFile(frontendPath);
-    } else {
-      console.error('Frontend not found at:', frontendPath);
-      dialog.showErrorBox('Frontend Error', `Frontend not found at: ${frontendPath}`);
-    }
+    loadAppRoute(pendingRoute);
+    pendingRoute = '';
   }, 1500);
 
   mainWindow.on('closed', () => {
@@ -91,7 +218,14 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow);
+if (gotSingleInstanceLock) {
+  pendingRoute = parseDeepLink(process.argv);
+
+  app.whenReady().then(() => {
+    registerProtocol();
+    createWindow();
+  });
+}
 
 // 5. Cleanup: Kill the Go backend when the Electron app quits
 app.on('will-quit', () => {

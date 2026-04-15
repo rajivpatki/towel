@@ -5,7 +5,7 @@ import './styles.css'
 import './design-overrides.css'
 
 // Register service worker
-if ('serviceWorker' in navigator) {
+if ('serviceWorker' in navigator && window.location.protocol !== 'file:') {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/service-worker.js')
       .then(registration => {

@@ -24,6 +24,14 @@
   "build": {
     "appId": "com.towel.app",
     "productName": "Towel",
+    "protocols": [
+      {
+        "name": "Towel OAuth",
+        "schemes": [
+          "towel"
+        ]
+      }
+    ],
     "directories": {
       "output": "dist"
     },

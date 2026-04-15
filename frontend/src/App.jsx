@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
+import { BrowserRouter, HashRouter, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import { ToastProvider } from './components/ToastProvider'
 import GoogleOAuth from './pages/setup/GoogleOAuth'
@@ -10,6 +10,7 @@ import History from './pages/History'
 import Preferences from './pages/Preferences'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
+const Router = window.location.protocol === 'file:' ? HashRouter : BrowserRouter
 
 async function parseResponse(response) {
   if (response.ok) {
@@ -89,7 +90,7 @@ function App() {
 
   return (
     <ToastProvider>
-      <BrowserRouter>
+      <Router>
         {isSetupComplete ? (
           <AuthenticatedLayout status={status} onStatusChange={loadStatus} />
         ) : (
@@ -100,7 +101,7 @@ function App() {
             <Route path="*" element={<Navigate to="/setup/google" replace />} />
           </Routes>
         )}
-      </BrowserRouter>
+      </Router>
     </ToastProvider>
   )
 }
