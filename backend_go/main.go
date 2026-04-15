@@ -16,7 +16,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fernet/fernet-go"
@@ -25,9 +27,10 @@ import (
 
 const (
 	googleAuthEndpoint     = "https://accounts.google.com/o/oauth2/v2/auth"
-	googleTokenEndpoint    = "https://oauth2.googleapis.com/token"
 	googleUserinfoEndpoint = "https://openidconnect.googleapis.com/v1/userinfo"
 	frontendSetupURL       = "http://localhost:3000/setup/gmail"
+	maxToolCallIterations  = 20
+	streamSessionTTL       = 15 * time.Minute
 )
 
 type Config struct {
@@ -44,6 +47,10 @@ type App struct {
 	config     Config
 	db         *sql.DB
 	httpClient *http.Client
+
+	streamMu         sync.Mutex
+	streamSessions   map[string]*streamSession
+	nextSubscriberID int64
 }
 
 type AgentDefinition struct {
@@ -57,10 +64,10 @@ type AgentDefinition struct {
 }
 
 type GmailToolDefinition struct {
-	Name        string   `json:"name"`
+	Name         string   `json:"name"`
 	GmailActions []string `json:"gmail_actions"`
-	Description string   `json:"description"`
-	SafetyModel string   `json:"safety_model"`
+	Description  string   `json:"description"`
+	SafetyModel  string   `json:"safety_model"`
 }
 
 type SetupState struct {
@@ -103,12 +110,32 @@ type LLMSetupIn struct {
 }
 
 type ChatMessageIn struct {
-	Message string `json:"message"`
+	Message        string  `json:"message"`
+	ConversationID *string `json:"conversation_id,omitempty"`
 }
 
 type ChatMessageOut struct {
-	Response string   `json:"response"`
-	Actions  []string `json:"actions"`
+	ConversationID string   `json:"conversation_id"`
+	Response       string   `json:"response"`
+	Actions        []string `json:"actions"`
+}
+
+type ChatSessionStartOut struct {
+	ConversationID string `json:"conversation_id"`
+	SessionID      string `json:"session_id"`
+}
+
+type ConversationMessage struct {
+	ID             int64  `json:"id"`
+	ConversationID string `json:"conversation_id"`
+	Role           string `json:"role"`
+	Content        string `json:"content"`
+	CreatedAt      string `json:"created_at"`
+}
+
+type ConversationMessagesOut struct {
+	ConversationID string                `json:"conversation_id"`
+	Messages       []ConversationMessage `json:"messages"`
 }
 
 type HistoryItem struct {
@@ -145,6 +172,36 @@ type PreferencesIn struct {
 
 type errorResponse struct {
 	Detail string `json:"detail"`
+}
+
+type streamEvent struct {
+	ID    int64
+	Event string
+	Data  []byte
+}
+
+type streamSession struct {
+	ID          string
+	Events      []streamEvent
+	NextEventID int64
+	Subscribers map[int64]chan streamEvent
+	Completed   bool
+	UpdatedAt   time.Time
+}
+
+type llmToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type llmResponseMessage struct {
+	Role      string        `json:"role"`
+	Content   any           `json:"content"`
+	ToolCalls []llmToolCall `json:"tool_calls"`
 }
 
 var agentDefinitions = []AgentDefinition{
@@ -307,6 +364,7 @@ func newApp(config Config) (*App, error) {
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 		},
+		streamSessions: make(map[string]*streamSession),
 	}
 	if err := app.initDB(); err != nil {
 		db.Close()
@@ -317,6 +375,7 @@ func newApp(config Config) (*App, error) {
 
 func (a *App) initDB() error {
 	statements := []string{
+		`PRAGMA foreign_keys = ON;`,
 		`PRAGMA busy_timeout = 5000;`,
 		`CREATE TABLE IF NOT EXISTS setup_state (
 			id INTEGER PRIMARY KEY,
@@ -351,7 +410,21 @@ func (a *App) initDB() error {
 			payload TEXT,
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS conversations (
+			id TEXT PRIMARY KEY,
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS conversation_messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			conversation_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+		);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_records_key ON secret_records(key);`,
+		`CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_id_id ON conversation_messages(conversation_id, id);`,
 		`INSERT OR IGNORE INTO setup_state (id) VALUES (1);`,
 	}
 	for _, statement := range statements {
@@ -373,6 +446,9 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc(a.config.APIPrefix+"/setup/llm", a.handleSaveLLMSetup)
 	mux.HandleFunc(a.config.APIPrefix+"/tools/gmail", a.handleGmailTools)
 	mux.HandleFunc(a.config.APIPrefix+"/chat", a.handleChat)
+	mux.HandleFunc(a.config.APIPrefix+"/chat/session", a.handleChatSession)
+	mux.HandleFunc(a.config.APIPrefix+"/chat/stream", a.handleChatStream)
+	mux.HandleFunc(a.config.APIPrefix+"/chat/conversations/", a.handleConversationMessages)
 	mux.HandleFunc(a.config.APIPrefix+"/history", a.handleHistory)
 	mux.HandleFunc(a.config.APIPrefix+"/preferences", a.handlePreferences)
 	return a.withCORS(mux)
@@ -385,7 +461,7 @@ func (a *App) withCORS(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", allowed)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Last-Event-ID")
 			w.Header().Set("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
@@ -545,12 +621,166 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "message is required")
 		return
 	}
-	response, err := a.processChatMessage(payload.Message)
+	conversationID, err := a.resolveConversationID(payload.ConversationID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	response, err := a.processChatMessage(conversationID, payload.Message, nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func (a *App) handleChatSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var payload ChatMessageIn
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	payload.Message = strings.TrimSpace(payload.Message)
+	if payload.Message == "" {
+		writeError(w, http.StatusBadRequest, "message is required")
+		return
+	}
+	conversationID, err := a.resolveConversationID(payload.ConversationID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.startStreamSession(conversationID); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	go func() {
+		emit := func(token string) {
+			_ = a.emitStreamToken(conversationID, token)
+		}
+		response, processErr := a.processChatMessage(conversationID, payload.Message, emit)
+		if processErr != nil {
+			_ = a.emitStreamError(conversationID, processErr.Error())
+			return
+		}
+		_ = a.emitStreamDone(conversationID, response)
+	}()
+	writeJSON(w, http.StatusOK, ChatSessionStartOut{
+		ConversationID: conversationID,
+		SessionID:      conversationID,
+	})
+}
+
+func (a *App) handleChatStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+	if !isValidConversationID(sessionID) {
+		writeError(w, http.StatusBadRequest, "session_id is invalid")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming is not supported")
+		return
+	}
+	backlog, updates, unsubscribe, completed, err := a.subscribeStreamSession(sessionID, parseLastEventID(r))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	defer unsubscribe()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+
+	for _, event := range backlog {
+		if err := writeSSEEvent(w, event); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+
+	if completed {
+		return
+	}
+
+	keepAlive := time.NewTicker(15 * time.Second)
+	defer keepAlive.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event, ok := <-updates:
+			if !ok {
+				return
+			}
+			if err := writeSSEEvent(w, event); err != nil {
+				return
+			}
+			flusher.Flush()
+			if event.Event == "done" || event.Event == "failed" {
+				return
+			}
+		case <-keepAlive.C:
+			if _, err := io.WriteString(w, ": keep-alive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func (a *App) handleConversationMessages(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	prefix := a.config.APIPrefix + "/chat/conversations/"
+	if !strings.HasPrefix(r.URL.Path, prefix) {
+		http.NotFound(w, r)
+		return
+	}
+	conversationID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, prefix))
+	if conversationID == "" {
+		writeError(w, http.StatusBadRequest, "conversation_id is required")
+		return
+	}
+	if !isValidConversationID(conversationID) {
+		writeError(w, http.StatusBadRequest, "conversation_id is invalid")
+		return
+	}
+	exists, err := a.conversationExists(conversationID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "conversation not found")
+		return
+	}
+	messages, err := a.getConversationMessages(conversationID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ConversationMessagesOut{
+		ConversationID: conversationID,
+		Messages:       messages,
+	})
 }
 
 func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
@@ -776,7 +1006,7 @@ func (a *App) completeGoogleOAuthCallback(code string, stateValue string) error 
 	form.Set("code_verifier", codeVerifier)
 	form.Set("grant_type", "authorization_code")
 	form.Set("redirect_uri", a.buildRedirectURI())
-	req, err := http.NewRequest(http.MethodPost, googleTokenEndpoint, strings.NewReader(form.Encode()))
+	req, err := http.NewRequest(http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return err
 	}
@@ -859,6 +1089,28 @@ func (a *App) getAllPreferences() ([]PreferenceItem, error) {
 	return items, rows.Err()
 }
 
+func (a *App) logActionHistory(actionType string, summary string, payload string) error {
+	actionType = strings.TrimSpace(actionType)
+	if actionType == "" {
+		actionType = "tool_call"
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		summary = "Tool call executed"
+	}
+	trimmedSummary := truncateString(summary, 200)
+
+	var payloadValue any
+	if strings.TrimSpace(payload) == "" {
+		payloadValue = nil
+	} else {
+		payloadValue = payload
+	}
+
+	_, err := a.db.Exec(`INSERT INTO action_history (action_type, summary, payload) VALUES (?, ?, ?)`, actionType, trimmedSummary, payloadValue)
+	return err
+}
+
 func (a *App) savePreferences(preferences []PreferenceInput) error {
 	existingRows, err := a.db.Query(`SELECT id FROM preferences`)
 	if err != nil {
@@ -928,7 +1180,130 @@ func (a *App) getActionHistory(limit int) ([]HistoryItem, error) {
 	return items, rows.Err()
 }
 
-func (a *App) processChatMessage(userMessage string) (ChatMessageOut, error) {
+func (a *App) resolveConversationID(raw *string) (string, error) {
+	conversationID := ""
+	if raw != nil {
+		conversationID = strings.TrimSpace(*raw)
+	}
+	if conversationID == "" {
+		generated, err := generateUUID()
+		if err != nil {
+			return "", err
+		}
+		return generated, nil
+	}
+	if !isValidConversationID(conversationID) {
+		return "", errors.New("conversation_id is invalid")
+	}
+	return conversationID, nil
+}
+
+func isValidConversationID(value string) bool {
+	if len(value) < 8 || len(value) > 128 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func generateUUID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
+func (a *App) ensureConversation(conversationID string) error {
+	_, err := a.db.Exec(
+		`INSERT INTO conversations (id) VALUES (?) ON CONFLICT(id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP`,
+		conversationID,
+	)
+	return err
+}
+
+func (a *App) conversationExists(conversationID string) (bool, error) {
+	row := a.db.QueryRow(`SELECT 1 FROM conversations WHERE id = ? LIMIT 1`, conversationID)
+	var found int
+	if err := row.Scan(&found); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (a *App) saveConversationMessage(conversationID string, role string, content string) error {
+	if _, err := a.db.Exec(`INSERT INTO conversation_messages (conversation_id, role, content) VALUES (?, ?, ?)`, conversationID, role, content); err != nil {
+		return err
+	}
+	_, err := a.db.Exec(`UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?`, conversationID)
+	return err
+}
+
+func (a *App) getConversationMessages(conversationID string) ([]ConversationMessage, error) {
+	rows, err := a.db.Query(`SELECT id, conversation_id, role, content, created_at FROM conversation_messages WHERE conversation_id = ? ORDER BY id`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	messages := make([]ConversationMessage, 0)
+	for rows.Next() {
+		var message ConversationMessage
+		if err := rows.Scan(&message.ID, &message.ConversationID, &message.Role, &message.Content, &message.CreatedAt); err != nil {
+			return nil, err
+		}
+		messages = append(messages, message)
+	}
+	return messages, rows.Err()
+}
+
+func buildChatSystemPrompt(preferences []PreferenceItem) string {
+	prompt := strings.TrimSpace(`You are Towel, a careful Gmail organization assistant.
+
+Objectives:
+- Help the user triage inboxes, clean clutter, and build sustainable Gmail workflows.
+- Prefer safe, reversible actions.
+
+Tool policy:
+- Use tools when a claim depends on mailbox state.
+- Never invent tool results.
+- If tool outputs are partial or placeholder, say so clearly and propose the next safest step.
+- Treat destructive actions as pseudo-actions under the Towel/ namespace.
+
+Response style:
+- Be concise and practical.
+- After any tool usage, summarize what happened and what to do next.`)
+	if len(preferences) == 0 {
+		return prompt
+	}
+	lines := make([]string, 0, len(preferences))
+	for _, pref := range preferences {
+		value := strings.TrimSpace(pref.Value)
+		if value == "" {
+			continue
+		}
+		lines = append(lines, "- "+value)
+	}
+	if len(lines) == 0 {
+		return prompt
+	}
+	return prompt + "\n\nUser preferences:\n" + strings.Join(lines, "\n")
+}
+
+func (a *App) processChatMessage(conversationID string, userMessage string, emitToken func(string)) (ChatMessageOut, error) {
 	state, err := a.getSetupState()
 	if err != nil {
 		return ChatMessageOut{}, err
@@ -951,32 +1326,109 @@ func (a *App) processChatMessage(userMessage string) (ChatMessageOut, error) {
 	if err != nil {
 		return ChatMessageOut{}, err
 	}
-	systemPrompt := "You are Towel, an AI assistant for Gmail organization. You help users manage their emails safely."
-	if len(preferences) > 0 {
-		lines := make([]string, 0, len(preferences))
-		for _, pref := range preferences {
-			lines = append(lines, "- "+pref.Value)
-		}
-		systemPrompt += "\n\nUser preferences:\n" + strings.Join(lines, "\n")
+
+	if err := a.ensureConversation(conversationID); err != nil {
+		return ChatMessageOut{}, err
 	}
-	assistantMessage, err := a.callLLM(agent, apiKey, systemPrompt, userMessage)
+	if err := a.saveConversationMessage(conversationID, "user", userMessage); err != nil {
+		return ChatMessageOut{}, err
+	}
+
+	history, err := a.getConversationMessages(conversationID)
+	if err != nil {
+		return ChatMessageOut{}, err
+	}
+
+	systemPrompt := buildChatSystemPrompt(preferences)
+	messages := make([]map[string]any, 0, len(history)+1)
+	messages = append(messages, map[string]any{"role": "system", "content": systemPrompt})
+	for _, item := range history {
+		role := strings.TrimSpace(item.Role)
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		messages = append(messages, map[string]any{"role": role, "content": item.Content})
+	}
+
+	assistantMessage, actions, err := a.callLLM(agent, apiKey, messages, emitToken)
 	if err != nil {
 		return ChatMessageOut{}, fmt.Errorf("Chat processing failed: %v", err)
 	}
-	var payload any
-	if strings.TrimSpace(assistantMessage) != "" {
-		payload = truncateString(assistantMessage, 500)
+	assistantMessage = strings.TrimSpace(assistantMessage)
+	if assistantMessage == "" {
+		return ChatMessageOut{}, errors.New("Chat processing failed: model returned an empty response")
 	}
-	if _, err := a.db.Exec(`INSERT INTO action_history (action_type, summary, payload) VALUES (?, ?, ?)`, "chat_query", truncateString(userMessage, 200), payload); err != nil {
+
+	if err := a.saveConversationMessage(conversationID, "assistant", assistantMessage); err != nil {
 		return ChatMessageOut{}, err
 	}
+
 	return ChatMessageOut{
-		Response: assistantMessage,
-		Actions:  []string{},
+		ConversationID: conversationID,
+		Response:       assistantMessage,
+		Actions:        actions,
 	}, nil
 }
 
-func (a *App) callLLM(agent AgentDefinition, apiKey string, systemPrompt string, userMessage string) (string, error) {
+func (a *App) callLLM(agent AgentDefinition, apiKey string, messages []map[string]any, emitToken func(string)) (string, []string, error) {
+	tools := buildLLMToolsPayload()
+	actions := make([]string, 0)
+
+	for iteration := 0; iteration < maxToolCallIterations; iteration++ {
+		message, err := a.callLLMOnce(agent, apiKey, messages, tools)
+		if err != nil {
+			return "", actions, err
+		}
+
+		content := stringifyLLMContent(message.Content)
+		if len(message.ToolCalls) == 0 {
+			if strings.TrimSpace(content) == "" {
+				return "", actions, errors.New("upstream LLM returned empty content")
+			}
+			emitTokenizedText(content, emitToken)
+			return content, actions, nil
+		}
+
+		assistantMessage := map[string]any{
+			"role":       "assistant",
+			"tool_calls": convertToolCalls(message.ToolCalls),
+			"content":    "",
+		}
+		if message.Content != nil {
+			assistantMessage["content"] = message.Content
+		}
+		messages = append(messages, assistantMessage)
+
+		if text := strings.TrimSpace(content); text != "" {
+			note := "Assistant: " + text
+			actions = append(actions, note)
+			emitTokenizedText(note+"\n", emitToken)
+		}
+
+		for toolIndex, toolCall := range message.ToolCalls {
+			result, action, actionType := a.executeToolCall(toolCall)
+			actions = append(actions, action)
+			emitTokenizedText(action+"\n", emitToken)
+			if err := a.logActionHistory(actionType, action, result); err != nil {
+				return "", actions, fmt.Errorf("failed to record tool call: %w", err)
+			}
+
+			toolCallID := strings.TrimSpace(toolCall.ID)
+			if toolCallID == "" {
+				toolCallID = fmt.Sprintf("toolcall_%d_%d", iteration, toolIndex)
+			}
+			messages = append(messages, map[string]any{
+				"role":         "tool",
+				"tool_call_id": toolCallID,
+				"content":      result,
+			})
+		}
+	}
+
+	return "", actions, fmt.Errorf("upstream LLM exceeded tool-call iteration limit (%d)", maxToolCallIterations)
+}
+
+func buildLLMToolsPayload() []map[string]any {
 	tools := make([]map[string]any, 0, len(gmailToolDefinitions))
 	for _, tool := range gmailToolDefinitions {
 		functionName := strings.ReplaceAll(tool.Name, ".", "_")
@@ -992,74 +1444,345 @@ func (a *App) callLLM(agent AgentDefinition, apiKey string, systemPrompt string,
 			},
 		})
 	}
+	return tools
+}
 
+func convertToolCalls(toolCalls []llmToolCall) []map[string]any {
+	converted := make([]map[string]any, 0, len(toolCalls))
+	for _, call := range toolCalls {
+		callType := strings.TrimSpace(call.Type)
+		if callType == "" {
+			callType = "function"
+		}
+		converted = append(converted, map[string]any{
+			"id":   call.ID,
+			"type": callType,
+			"function": map[string]any{
+				"name":      call.Function.Name,
+				"arguments": call.Function.Arguments,
+			},
+		})
+	}
+	return converted
+}
+
+func (a *App) callLLMOnce(agent AgentDefinition, apiKey string, messages []map[string]any, tools []map[string]any) (llmResponseMessage, error) {
 	requestPayload := map[string]any{
-		"model": agent.Model,
-		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": userMessage},
-		},
-		"temperature": 0.7,
+		"model":                 agent.Model,
+		"messages":              messages,
+		"temperature":           0.7,
 		"max_completion_tokens": 1000,
-		"tools":               tools,
+		"tools":                 tools,
+		"tool_choice":           "auto",
 	}
 	body, err := json.Marshal(requestPayload)
 	if err != nil {
-		return "", err
+		return llmResponseMessage{}, err
 	}
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(agent.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return llmResponseMessage{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return llmResponseMessage{}, err
 	}
 	defer resp.Body.Close()
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", err
+		return llmResponseMessage{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("upstream LLM request failed: %s", strings.TrimSpace(string(responseBody)))
+		return llmResponseMessage{}, fmt.Errorf("upstream LLM request failed: %s", strings.TrimSpace(string(responseBody)))
 	}
 	var payload struct {
 		Choices []struct {
-			Message struct {
-				Content    any  `json:"content"`
-				ToolCalls  []struct {
-					ID       string `json:"id"`
-					Type     string `json:"type"`
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
-					} `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
+			Message llmResponseMessage `json:"message"`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		return "", err
+		return llmResponseMessage{}, err
 	}
 	if len(payload.Choices) == 0 {
-		return "", errors.New("upstream LLM response did not include any choices")
+		return llmResponseMessage{}, errors.New("upstream LLM response did not include any choices")
 	}
-	msg := payload.Choices[0].Message
-	if len(msg.ToolCalls) > 0 {
-		parts := []string{"I want to use these tools:"}
-		for _, tc := range msg.ToolCalls {
-			parts = append(parts, fmt.Sprintf("- %s(%s)", tc.Function.Name, tc.Function.Arguments))
+	return payload.Choices[0].Message, nil
+}
+
+func (a *App) executeToolCall(call llmToolCall) (string, string, string) {
+	argumentsText := strings.TrimSpace(call.Function.Arguments)
+	arguments := map[string]any{}
+	if argumentsText != "" {
+		if err := json.Unmarshal([]byte(argumentsText), &arguments); err != nil {
+			arguments = map[string]any{"raw": argumentsText}
 		}
-		return strings.Join(parts, "\n"), nil
 	}
-	return stringifyLLMContent(msg.Content), nil
+
+	toolName := call.Function.Name
+	safetyModel := "unknown"
+	toolDescription := "Tool definition not found."
+	if definition, ok := getToolDefinitionByFunctionName(call.Function.Name); ok {
+		toolName = definition.Name
+		safetyModel = definition.SafetyModel
+		toolDescription = definition.Description
+	}
+
+	// Execute real Gmail tool if available
+	var resultJSON string
+	var execErr error
+	if strings.HasPrefix(toolName, "gmail.") {
+		resultJSON, execErr = a.executeGmailTool(toolName, arguments)
+	}
+
+	if execErr != nil {
+		// Return error as result so LLM can see what went wrong
+		resultPayload := map[string]any{
+			"ok":           false,
+			"tool":         toolName,
+			"safety_model": safetyModel,
+			"description":  toolDescription,
+			"arguments":    arguments,
+			"error":        execErr.Error(),
+		}
+		resultBytes, _ := json.Marshal(resultPayload)
+		action := fmt.Sprintf("Failed to execute %s: %s", toolName, truncateString(execErr.Error(), 120))
+		return string(resultBytes), action, toolName
+	}
+
+	if resultJSON == "" {
+		// Fallback for non-Gmail tools or unexpected cases
+		resultPayload := map[string]any{
+			"ok":           true,
+			"tool":         toolName,
+			"safety_model": safetyModel,
+			"description":  toolDescription,
+			"arguments":    arguments,
+			"result":       "Tool executed (no specific implementation for this tool).",
+		}
+		resultBytes, _ := json.Marshal(resultPayload)
+		resultJSON = string(resultBytes)
+	}
+
+	action := "Executed tool " + toolName + "."
+	if argumentsText != "" {
+		action = fmt.Sprintf("Executed tool %s with args %s.", toolName, truncateString(argumentsText, 180))
+	}
+
+	return resultJSON, action, toolName
+}
+
+func getToolDefinitionByFunctionName(functionName string) (GmailToolDefinition, bool) {
+	for _, tool := range gmailToolDefinitions {
+		if strings.ReplaceAll(tool.Name, ".", "_") == functionName {
+			return tool, true
+		}
+	}
+	return GmailToolDefinition{}, false
+}
+
+func (a *App) startStreamSession(sessionID string) error {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	a.pruneStreamSessionsLocked()
+
+	if existing, ok := a.streamSessions[sessionID]; ok {
+		if !existing.Completed {
+			return errors.New("a stream is already active for this conversation")
+		}
+		for subscriberID, ch := range existing.Subscribers {
+			close(ch)
+			delete(existing.Subscribers, subscriberID)
+		}
+	}
+
+	a.streamSessions[sessionID] = &streamSession{
+		ID:          sessionID,
+		Events:      make([]streamEvent, 0, 128),
+		NextEventID: 1,
+		Subscribers: make(map[int64]chan streamEvent),
+		UpdatedAt:   time.Now().UTC(),
+	}
+	return nil
+}
+
+func (a *App) subscribeStreamSession(sessionID string, lastEventID int64) ([]streamEvent, <-chan streamEvent, func(), bool, error) {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	a.pruneStreamSessionsLocked()
+
+	session, ok := a.streamSessions[sessionID]
+	if !ok {
+		return nil, nil, nil, false, errors.New("stream session not found")
+	}
+
+	backlog := make([]streamEvent, 0, len(session.Events))
+	for _, event := range session.Events {
+		if event.ID > lastEventID {
+			backlog = append(backlog, event)
+		}
+	}
+
+	if session.Completed {
+		return backlog, nil, func() {}, true, nil
+	}
+
+	a.nextSubscriberID++
+	subscriberID := a.nextSubscriberID
+	updates := make(chan streamEvent, 128)
+	session.Subscribers[subscriberID] = updates
+	session.UpdatedAt = time.Now().UTC()
+
+	unsubscribe := func() {
+		a.streamMu.Lock()
+		defer a.streamMu.Unlock()
+		session, exists := a.streamSessions[sessionID]
+		if !exists {
+			return
+		}
+		ch, exists := session.Subscribers[subscriberID]
+		if !exists {
+			return
+		}
+		delete(session.Subscribers, subscriberID)
+		close(ch)
+	}
+
+	return backlog, updates, unsubscribe, false, nil
+}
+
+func (a *App) publishStreamEvent(sessionID string, eventName string, payload any) error {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	session, ok := a.streamSessions[sessionID]
+	if !ok {
+		return errors.New("stream session not found")
+	}
+
+	event := streamEvent{
+		ID:    session.NextEventID,
+		Event: eventName,
+		Data:  encoded,
+	}
+	session.NextEventID++
+	session.Events = append(session.Events, event)
+	session.UpdatedAt = time.Now().UTC()
+	if eventName == "done" || eventName == "failed" {
+		session.Completed = true
+	}
+
+	for _, updates := range session.Subscribers {
+		select {
+		case updates <- event:
+		default:
+		}
+	}
+
+	return nil
+}
+
+func (a *App) emitStreamToken(sessionID string, token string) error {
+	if token == "" {
+		return nil
+	}
+	return a.publishStreamEvent(sessionID, "token", map[string]string{"v": token})
+}
+
+func (a *App) emitStreamDone(sessionID string, response ChatMessageOut) error {
+	return a.publishStreamEvent(sessionID, "done", response)
+}
+
+func (a *App) emitStreamError(sessionID string, detail string) error {
+	return a.publishStreamEvent(sessionID, "failed", errorResponse{Detail: detail})
+}
+
+func (a *App) pruneStreamSessionsLocked() {
+	cutoff := time.Now().UTC().Add(-streamSessionTTL)
+	for sessionID, session := range a.streamSessions {
+		if session.UpdatedAt.After(cutoff) {
+			continue
+		}
+		for subscriberID, updates := range session.Subscribers {
+			close(updates)
+			delete(session.Subscribers, subscriberID)
+		}
+		delete(a.streamSessions, sessionID)
+	}
+}
+
+func parseLastEventID(r *http.Request) int64 {
+	raw := strings.TrimSpace(r.Header.Get("Last-Event-ID"))
+	if raw == "" {
+		raw = strings.TrimSpace(r.URL.Query().Get("last_event_id"))
+	}
+	if raw == "" {
+		return 0
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
+}
+
+func writeSSEEvent(w io.Writer, event streamEvent) error {
+	if event.Event != "" {
+		if _, err := fmt.Fprintf(w, "event: %s\n", event.Event); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w, "id: %d\n", event.ID); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", event.Data); err != nil {
+		return err
+	}
+	return nil
+}
+
+func emitTokenizedText(value string, emitToken func(string)) {
+	if emitToken == nil || value == "" {
+		return
+	}
+	for _, token := range splitTextTokens(value) {
+		emitToken(token)
+	}
+}
+
+func splitTextTokens(value string) []string {
+	tokens := make([]string, 0)
+	var builder strings.Builder
+	runeCount := 0
+	flush := func() {
+		if builder.Len() == 0 {
+			return
+		}
+		tokens = append(tokens, builder.String())
+		builder.Reset()
+		runeCount = 0
+	}
+	for _, r := range value {
+		builder.WriteRune(r)
+		runeCount++
+		if r == ' ' || r == '\n' || runeCount >= 24 {
+			flush()
+		}
+	}
+	flush()
+	return tokens
 }
 
 func stringifyLLMContent(content any) string {
 	switch value := content.(type) {
+	case nil:
+		return ""
 	case string:
 		return value
 	case []any:
@@ -1075,9 +1798,15 @@ func stringifyLLMContent(content any) string {
 			return strings.Join(parts, "")
 		}
 		encoded, _ := json.Marshal(value)
+		if string(encoded) == "null" {
+			return ""
+		}
 		return string(encoded)
 	default:
 		encoded, _ := json.Marshal(value)
+		if string(encoded) == "null" {
+			return ""
+		}
 		return string(encoded)
 	}
 }
