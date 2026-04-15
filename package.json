@@ -1,6 +1,11 @@
 {
   "name": "towel",
   "version": "1.0.0",
+  "description": "Desktop application for Towel.",
+  "author": {
+    "name": "Rajiv Patki",
+    "email": "rajivpatki@users.noreply.github.com"
+  },
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -30,26 +35,16 @@
       "!frontend/src/**/*",
       "!frontend/vite.config.js"
     ],
-    "extraResources": [
-      {
-        "from": "backend-server",
-        "to": "backend-server",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "backend-server.exe",
-        "to": "backend-server.exe",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
     "mac": {
       "target": [
         "dmg",
         "zip"
+      ],
+      "extraResources": [
+        {
+          "from": "backend-server",
+          "to": "backend-server"
+        }
       ],
       "category": "public.app-category.productivity"
     },
@@ -57,12 +52,24 @@
       "target": [
         "nsis",
         "portable"
+      ],
+      "extraResources": [
+        {
+          "from": "backend-server.exe",
+          "to": "backend-server.exe"
+        }
       ]
     },
     "linux": {
       "target": [
         "AppImage",
         "deb"
+      ],
+      "extraResources": [
+        {
+          "from": "backend-server",
+          "to": "backend-server"
+        }
       ],
       "category": "Office"
     }
