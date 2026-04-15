@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import { ToastProvider } from './components/ToastProvider'
 import GoogleOAuth from './pages/setup/GoogleOAuth'
@@ -9,7 +9,7 @@ import Chat from './pages/Chat'
 import History from './pages/History'
 import Preferences from './pages/Preferences'
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `${window.location.protocol}//${window.location.hostname}:8000`
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
 
 async function parseResponse(response) {
   if (response.ok) {
@@ -27,6 +27,32 @@ async function parseResponse(response) {
     detail = response.statusText || detail
   }
   throw new Error(detail)
+}
+
+function ChatWrapper() {
+  const { conversationId } = useParams()
+  return <Chat urlConversationId={conversationId || ''} />
+}
+
+function AuthenticatedLayout({ status, onStatusChange }) {
+  const location = useLocation()
+  const isChatPage = location.pathname.startsWith('/chat')
+
+  return (
+    <div className="app-layout">
+      <Sidebar status={status} onStatusChange={onStatusChange} />
+      <div className={`main-content${isChatPage ? ' chat-main-content' : ''}`}>
+        <Routes>
+          <Route path="/chat" element={<ChatWrapper />} />
+          <Route path="/chat/:conversationId" element={<ChatWrapper />} />
+          <Route path="/history" element={<History />} />
+          <Route path="/personalise" element={<Preferences />} />
+          <Route path="/preferences" element={<Navigate to="/personalise" replace />} />
+          <Route path="*" element={<Navigate to="/chat" replace />} />
+        </Routes>
+      </div>
+    </div>
+  )
 }
 
 function App() {
@@ -65,17 +91,7 @@ function App() {
     <ToastProvider>
       <BrowserRouter>
         {isSetupComplete ? (
-          <div className="app-layout">
-            <Sidebar />
-            <div className="main-content">
-              <Routes>
-                <Route path="/chat" element={<Chat />} />
-                <Route path="/history" element={<History />} />
-                <Route path="/preferences" element={<Preferences />} />
-                <Route path="*" element={<Navigate to="/chat" replace />} />
-              </Routes>
-            </div>
-          </div>
+          <AuthenticatedLayout status={status} onStatusChange={loadStatus} />
         ) : (
           <Routes>
             <Route path="/setup/google" element={<GoogleOAuth onStatusChange={loadStatus} />} />

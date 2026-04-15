@@ -1,7 +1,13 @@
-import { useState, useRef, useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import ReactMarkdown from 'react-markdown'
+import rehypeRaw from 'rehype-raw'
+import remarkGfm from 'remark-gfm'
+import streamManager from '../services/streamManager'
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `${window.location.protocol}//${window.location.hostname}:8000`
-const conversationStorageKey = 'towel.chat.conversation_id'
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
+const newChatEvent = 'towel:new-chat'
+const conversationRefreshEvent = 'towel:conversation-list-refresh'
 
 async function parseResponse(response) {
   if (response.ok) {
@@ -21,26 +27,6 @@ async function parseResponse(response) {
   throw new Error(detail)
 }
 
-function getStoredConversationId() {
-  try {
-    return localStorage.getItem(conversationStorageKey) || ''
-  } catch {
-    return ''
-  }
-}
-
-function saveConversationId(value) {
-  try {
-    if (value) {
-      localStorage.setItem(conversationStorageKey, value)
-      return
-    }
-    localStorage.removeItem(conversationStorageKey)
-  } catch {
-    // ignore localStorage failures
-  }
-}
-
 function newMessageId(prefix) {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `${prefix}-${crypto.randomUUID()}`
@@ -48,82 +34,256 @@ function newMessageId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
-function Chat() {
+function notifyNewChat() {
+  window.dispatchEvent(new Event(newChatEvent))
+  window.dispatchEvent(new Event(conversationRefreshEvent))
+}
+
+function MarkdownMessage({ content }) {
+  return (
+    <ReactMarkdown rehypePlugins={[rehypeRaw]} remarkPlugins={[remarkGfm]}>
+      {content || ''}
+    </ReactMarkdown>
+  )
+}
+
+function Chat({ urlConversationId = '' }) {
+  const navigate = useNavigate()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
-  const [conversationId, setConversationId] = useState(getStoredConversationId)
+  const [conversationId, setConversationId] = useState(urlConversationId)
   const messagesEndRef = useRef(null)
-  const streamRef = useRef(null)
+  const streamUnsubscribeRef = useRef(null)
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }
+  // Sync conversationId with URL
+  useEffect(() => {
+    setConversationId(urlConversationId)
+  }, [urlConversationId])
 
   useEffect(() => {
-    scrollToBottom()
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Handle new chat event from sidebar
   useEffect(() => {
+    const handleNewChat = () => {
+      setBusy(false)
+      setInput('')
+      setMessages([])
+    }
+
+    window.addEventListener(newChatEvent, handleNewChat)
+
     return () => {
-      if (streamRef.current) {
-        streamRef.current.close()
-        streamRef.current = null
-      }
+      window.removeEventListener(newChatEvent, handleNewChat)
     }
   }, [])
 
+  // Load conversation history and check for active streams
   useEffect(() => {
-    if (!conversationId || messages.length > 0) {
+    if (!conversationId) {
+      setMessages([])
       return
     }
 
     let active = true
+    let streamAccumulatedContent = ''
+    let isStreamActive = false
 
-    async function loadConversationHistory() {
+    async function loadConversation() {
       try {
+        // Step 1: Check if there's an active stream FIRST (before loading DB)
+        // This is crucial so we can display accumulated content immediately
+        const streamState = streamManager.getStreamState(conversationId)
+        if (streamState && streamState.isActive) {
+          isStreamActive = true
+          streamAccumulatedContent = streamState.currentContent || ''
+        } else {
+          // Try to get stream state from backend
+          try {
+            const stateResponse = await fetch(`${apiBaseUrl}/api/chat/stream/state?session_id=${encodeURIComponent(conversationId)}`)
+            if (stateResponse.ok) {
+              const state = await stateResponse.json()
+              if (!state.completed && !state.has_error) {
+                isStreamActive = true
+                streamAccumulatedContent = state.content || ''
+              }
+            }
+          } catch {
+            // No active stream, proceed normally
+          }
+        }
+
+        // Step 2: Load conversation history from DB
         const response = await fetch(`${apiBaseUrl}/api/chat/conversations/${encodeURIComponent(conversationId)}`)
         if (response.status === 404) {
           if (!active) return
-          setConversationId('')
-          saveConversationId('')
+          navigate('/chat', { replace: true })
+          notifyNewChat()
           return
         }
 
         const data = await parseResponse(response)
-        if (!active || !Array.isArray(data.messages)) {
-          return
+        if (!active || !Array.isArray(data.messages)) return
+
+        // Step 3: Process DB messages
+        // If there's an active stream, the last assistant message in DB is stale (incomplete)
+        // We should exclude it since we'll show the streaming version instead
+        let dbMessages = data.messages
+          .filter((item) => item.role === 'user' || item.role === 'assistant')
+          .map((item) => ({
+            id: `db-${item.id}`,
+            role: item.role,
+            content: item.content,
+            actions: [],
+            streaming: false
+          }))
+
+        // If streaming is active and last message is from assistant, remove it
+        // (it's incomplete and the stream has the up-to-date accumulated content)
+        if (isStreamActive && dbMessages.length > 0) {
+          const lastMessage = dbMessages[dbMessages.length - 1]
+          if (lastMessage.role === 'assistant') {
+            dbMessages = dbMessages.slice(0, -1)
+          }
         }
 
-        setMessages(
-          data.messages
-            .filter((item) => item.role === 'user' || item.role === 'assistant')
-            .map((item) => ({
-              id: `db-${item.id}`,
-              role: item.role,
-              content: item.content,
-              actions: []
-            }))
-        )
+        // Step 4: Set messages with streaming message if active
+        if (isStreamActive) {
+          setBusy(true)
+          setMessages([
+            ...dbMessages,
+            {
+              id: newMessageId('assistant'),
+              role: 'assistant',
+              content: streamAccumulatedContent, // Show accumulated content immediately
+              actions: [],
+              streaming: true
+            }
+          ])
+        } else {
+          setMessages(dbMessages)
+        }
+
+        // Step 5: Subscribe to stream updates if active
+        if (isStreamActive) {
+          // Reconnect to stream for live updates
+          const unsubscribe = await streamManager.reconnectToStream(conversationId, {
+            onContent: (content) => {
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.streaming ? { ...msg, content } : msg
+                )
+              )
+            },
+            onComplete: (response) => {
+              setBusy(false)
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.streaming
+                    ? {
+                        id: `stream-${Date.now()}`,
+                        role: 'assistant',
+                        content: response.content,
+                        actions: response.actions || [],
+                        streaming: false
+                      }
+                    : msg
+                )
+              )
+              window.dispatchEvent(new Event(conversationRefreshEvent))
+            },
+            onError: (error) => {
+              setBusy(false)
+              setMessages((prev) =>
+                prev.map((msg) =>
+                  msg.streaming
+                    ? { ...msg, content: msg.content || `Error: ${error}`, error: true, streaming: false }
+                    : msg
+                )
+              )
+            },
+            onInactive: () => {
+              setBusy(false)
+            }
+          })
+
+          if (unsubscribe) {
+            streamUnsubscribeRef.current = unsubscribe
+          }
+        }
       } catch (err) {
-        console.error('Failed to load conversation history:', err)
+        console.error('Failed to load conversation:', err)
+        setBusy(false)
       }
     }
 
-    loadConversationHistory()
+    loadConversation()
 
     return () => {
       active = false
+      if (streamUnsubscribeRef.current) {
+        streamUnsubscribeRef.current()
+        streamUnsubscribeRef.current = null
+      }
     }
-  }, [conversationId, messages.length])
+  }, [conversationId, navigate])
 
-  async function handleSubmit(e) {
-    e.preventDefault()
-    if (!input.trim() || busy) return
+  function subscribeToStream(convId) {
+    if (streamUnsubscribeRef.current) {
+      streamUnsubscribeRef.current()
+    }
 
-    if (streamRef.current) {
-      streamRef.current.close()
-      streamRef.current = null
+    streamUnsubscribeRef.current = streamManager.subscribe(convId, {
+      onContent: (content) => {
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.streaming ? { ...msg, content } : msg
+          )
+        )
+      },
+      onComplete: (response) => {
+        setBusy(false)
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.streaming
+              ? {
+                  id: `stream-${Date.now()}`,
+                  role: 'assistant',
+                  content: response.content,
+                  actions: response.actions || [],
+                  streaming: false
+                }
+              : msg
+          )
+        )
+        // Update URL if conversation ID changed
+        if (response.conversation_id && response.conversation_id !== convId) {
+          navigate(`/chat/${response.conversation_id}`, { replace: true })
+        }
+        window.dispatchEvent(new Event(conversationRefreshEvent))
+      },
+      onError: (error) => {
+        setBusy(false)
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.streaming
+              ? { ...msg, content: msg.content || `Error: ${error}`, error: true, streaming: false }
+              : msg
+          )
+        )
+      },
+      onInactive: () => {
+        setBusy(false)
+      }
+    })
+  }
+
+  async function handleSubmit(event) {
+    event.preventDefault()
+    if (!input.trim() || busy) {
+      return
     }
 
     const userMessage = input.trim()
@@ -134,165 +294,47 @@ function Chat() {
     setMessages((prev) => [
       ...prev,
       { id: userMessageId, role: 'user', content: userMessage },
-      { id: assistantMessageId, role: 'assistant', content: '', actions: [] }
+      { id: assistantMessageId, role: 'assistant', content: '', actions: [], streaming: true }
     ])
     setBusy(true)
 
     try {
-      const sessionPayload = { message: userMessage }
-      if (conversationId) {
-        sessionPayload.conversation_id = conversationId
-      }
-
-      const sessionResponse = await fetch(`${apiBaseUrl}/api/chat/session`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(sessionPayload)
-      })
-
-      const session = await parseResponse(sessionResponse)
-      const resolvedConversationId = session.conversation_id
-      const sessionId = session.session_id || resolvedConversationId
-
-      if (!resolvedConversationId || !sessionId) {
-        throw new Error('Invalid stream session response')
-      }
-
-      setConversationId(resolvedConversationId)
-      saveConversationId(resolvedConversationId)
-
-      await new Promise((resolve, reject) => {
-        const streamUrl = `${apiBaseUrl}/api/chat/stream?session_id=${encodeURIComponent(sessionId)}`
-        const source = new EventSource(streamUrl)
-        streamRef.current = source
-
-        const cleanup = () => {
-          if (streamRef.current === source) {
-            streamRef.current = null
-          }
-          source.close()
-        }
-
-        source.addEventListener('token', (event) => {
-          try {
-            const payload = JSON.parse(event.data)
-            const token = typeof payload?.v === 'string' ? payload.v : ''
-            if (!token) {
-              return
+      // Use streamManager to handle the SSE connection
+      const resolvedConversationId = await streamManager.startStream(
+        conversationId,
+        userMessage,
+        {
+          onConversationId: (newId) => {
+            // Navigate to the new/existing conversation URL
+            if (newId !== conversationId) {
+              navigate(`/chat/${newId}`, { replace: true })
             }
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === assistantMessageId
-                  ? {
-                      ...msg,
-                      content: msg.content + token
-                    }
-                  : msg
-              )
-            )
-          } catch {
-            // ignore malformed token chunks
-          }
-        })
-
-        source.addEventListener('done', (event) => {
-          try {
-            const payload = JSON.parse(event.data)
-            const finalResponse = typeof payload?.response === 'string' ? payload.response : ''
-            const finalActions = Array.isArray(payload?.actions) ? payload.actions : []
-            const finalConversationId = typeof payload?.conversation_id === 'string' ? payload.conversation_id : ''
-
-            if (finalConversationId) {
-              setConversationId(finalConversationId)
-              saveConversationId(finalConversationId)
-            }
-
-            setMessages((prev) =>
-              prev.map((msg) =>
-                msg.id === assistantMessageId
-                  ? {
-                      ...msg,
-                      content: finalResponse || msg.content,
-                      actions: finalActions
-                    }
-                  : msg
-              )
-            )
-          } catch {
-            // keep tokenized content if final payload fails to parse
-          }
-          cleanup()
-          resolve()
-        })
-
-        source.addEventListener('failed', (event) => {
-          let detail = 'Stream failed'
-          try {
-            const payload = JSON.parse(event.data)
-            if (typeof payload?.detail === 'string' && payload.detail.trim()) {
-              detail = payload.detail.trim()
-            }
-          } catch {
-            // use fallback detail
-          }
-
-          setMessages((prev) =>
-            prev.map((msg) =>
-              msg.id === assistantMessageId
-                ? {
-                    ...msg,
-                    content: msg.content || `Error: ${detail}`,
-                    error: true
-                  }
-                : msg
-            )
-          )
-
-          cleanup()
-          reject(new Error(detail))
-        })
-
-        source.onerror = () => {
-          if (source.readyState === EventSource.CLOSED) {
-            cleanup()
-            reject(new Error('Stream connection closed unexpectedly'))
           }
         }
-      })
+      )
+
+      // Subscribe to stream updates for this conversation
+      subscribeToStream(resolvedConversationId)
+
     } catch (err) {
+      setBusy(false)
       setMessages((prev) =>
         prev.map((msg) =>
-          msg.id === assistantMessageId
-            ? {
-                ...msg,
-                content: msg.content || `Error: ${err.message}`,
-                error: true
-              }
+          msg.streaming
+            ? { ...msg, content: msg.content || `Error: ${err.message}`, error: true, streaming: false }
             : msg
         )
       )
-    } finally {
-      setBusy(false)
     }
   }
 
   return (
     <div className="chat-container">
-      <div className="chat-header">
-        <p className="eyebrow">AI Assistant</p>
-        <h2>Gmail Manager Chat</h2>
-        <p style={{ color: 'var(--color-text-secondary)', margin: 0 }}>
-          Ask me to organize your emails, create filters, or manage labels
-        </p>
-      </div>
-
       <div className="chat-messages">
         {messages.length === 0 ? (
-          <div style={{ textAlign: 'center', color: 'var(--color-text-tertiary)', padding: '3rem 0' }}>
-            <p style={{ fontSize: '1.125rem', marginBottom: '0.5rem' }}>👋 How can I help with your Gmail?</p>
-            <p style={{ fontSize: '0.9375rem' }}>Try asking me to organize emails or create filters</p>
+          <div className="chat-empty-state">
+            <p className="chat-empty-title">How can I help with your Gmail?</p>
+            <p className="chat-empty-copy">Ask me to organise messages, build filters, or clean up clutter.</p>
           </div>
         ) : (
           messages.map((msg, idx) => (
@@ -300,13 +342,28 @@ function Chat() {
               <div className="message-avatar">
                 {msg.role === 'user' ? 'You' : 'AI'}
               </div>
-              <div className="message-content">
-                {msg.content}
+              <div className={`message-content${msg.error ? ' error' : ''}`}>
+                {msg.role === 'assistant' ? (
+                  <div className="markdown-content">
+                    <MarkdownMessage content={msg.content} />
+                  </div>
+                ) : (
+                  <div className="message-text">{msg.content}</div>
+                )}
                 {msg.actions && msg.actions.length > 0 ? (
                   <div className="message-actions">
-                    {msg.actions.map((action, i) => (
-                      <div key={i}>→ {action}</div>
+                    {msg.actions.map((action, actionIndex) => (
+                      <div key={`${msg.id}-action-${actionIndex}`} className="message-action-item">
+                        {action}
+                      </div>
                     ))}
+                  </div>
+                ) : null}
+                {msg.streaming ? (
+                  <div className="streaming-indicator">
+                    <span className="streaming-dot" />
+                    <span className="streaming-dot" />
+                    <span className="streaming-dot" />
                   </div>
                 ) : null}
               </div>
@@ -316,28 +373,29 @@ function Chat() {
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="chat-input-container">
-        <form onSubmit={handleSubmit}>
-          <div className="chat-input-wrapper">
-            <textarea
-              className="chat-input"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Type your message..."
-              rows={1}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault()
-                  handleSubmit(e)
-                }
-              }}
-            />
-            <button type="submit" className="send-button" disabled={!input.trim() || busy}>
-              {busy ? 'Sending...' : 'Send'}
-            </button>
-          </div>
-        </form>
-      </div>
+      <form className="chat-form" onSubmit={handleSubmit}>
+        <div className="chat-input-bar">
+          <textarea
+            className="chat-input"
+            value={input}
+            onChange={(inputEvent) => setInput(inputEvent.target.value)}
+            placeholder="Message Towel..."
+            rows={1}
+            onKeyDown={(keyEvent) => {
+              if (keyEvent.key === 'Enter' && !keyEvent.shiftKey) {
+                keyEvent.preventDefault()
+                handleSubmit(keyEvent)
+              }
+            }}
+          />
+        </div>
+        <button type="submit" className="send-button" disabled={!input.trim() || busy} aria-label={busy ? 'Sending message' : 'Send message'}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M22 2 11 13" />
+            <path d="m22 2-7 20-4-9-9-4Z" />
+          </svg>
+        </button>
+      </form>
     </div>
   )
 }

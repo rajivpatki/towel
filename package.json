@@ -1,0 +1,57 @@
+{
+  "name": "towel",
+  "version": "1.0.0",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "npm run build:frontend && npm run build:backend && electron-builder",
+    "build:frontend": "cd frontend && npm install && VITE_API_BASE_URL=http://localhost:8000 npm run build",
+    "build:backend": "cd backend_go && go build -o ../backend-server .",
+    "build:backend:win": "cd backend_go && set CGO_ENABLED=1 && go build -o ../backend-server.exe .",
+    "build:backend:unix": "cd backend_go && CGO_ENABLED=1 go build -o ../backend-server .",
+    "dist": "electron-builder",
+    "dist:all": "electron-builder -mwl"
+  },
+  "devDependencies": {
+    "electron": "^29.0.0",
+    "electron-builder": "^24.9.1"
+  },
+  "build": {
+    "appId": "com.towel.app",
+    "productName": "Towel",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "frontend/dist/**/*",
+      "!backend_go/**/*",
+      "!frontend/node_modules/**/*",
+      "!frontend/src/**/*",
+      "!frontend/vite.config.js"
+    ],
+    "extraResources": [
+      {
+        "from": "backend-server",
+        "to": "backend-server",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "backend-server.exe",
+        "to": "backend-server.exe",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.productivity"
+    },
+    "win": {
+      "target": ["nsis", "portable"]
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Office"
+    }
+  }
+}

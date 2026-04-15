@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="towel" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
+  <path d="M110.818,106.957v176.162h-12.512c-10.252,0-18.562-8.311-18.562-18.562V106.957" fill="none" stroke="#191919" stroke-linecap="round" stroke-linejoin="round" stroke-width="12"/>
+  <line x1="110.818" y1="250.961" x2="320.256" y2="250.961" fill="none" stroke="#4f46e5" stroke-linecap="round" stroke-linejoin="round" stroke-width="12"/>
+  <line x1="110.818" y1="289.443" x2="320.256" y2="289.443" fill="none" stroke="#4f46e5" stroke-linecap="round" stroke-linejoin="round" stroke-width="12"/>
+  <path d="M79.83,106.957v-3.654c0-8.557,6.937-15.494,15.494-15.494h0c8.557,0,15.494,6.937,15.494,15.494v223.413c0,10.252,8.311,18.562,18.563,18.562h172.313c10.252,0,18.562-8.311,18.562-18.562V103.141c0-8.468-6.864-15.332-15.332-15.332H95.324" fill="none" stroke="#191919" stroke-linecap="round" stroke-linejoin="round" stroke-width="12"/>
+  <g>
+    <circle cx="46.622" cy="66.344" r="11.622" fill="none" stroke="#191919" stroke-linecap="round" stroke-linejoin="round" stroke-width="12"/>
+    <circle cx="353.378" cy="66.344" r="11.622" fill="none" stroke="#191919" stroke-linecap="round" stroke-linejoin="round" stroke-width="12"/>
+    <path d="M320.256,106.957h15.465c9.752,0,17.657-7.906,17.657-17.657v-11.539" fill="none" stroke="#191919" stroke-linecap="round" stroke-linejoin="round" stroke-width="12"/>
+    <path d="M46.593,77.76v11.539c0,9.752,7.906,17.657,17.657,17.657h46.568" fill="none" stroke="#191919" stroke-linecap="round" stroke-linejoin="round" stroke-width="12"/>
+  </g>
+</svg>

@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useToast } from '../components/ToastProvider'
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `${window.location.protocol}//${window.location.hostname}:8000`
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
 
 async function parseResponse(response) {
   if (response.ok) {

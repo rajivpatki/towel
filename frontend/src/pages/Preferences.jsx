@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useToast } from '../components/ToastProvider'
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `${window.location.protocol}//${window.location.hostname}:8000`
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
 
 async function parseResponse(response) {
   if (response.ok) {
@@ -58,15 +58,16 @@ function Preferences() {
         body: JSON.stringify({ preferences })
       })
       await parseResponse(response)
+      await loadPreferences()
       showToast({
         tone: 'success',
-        title: 'Preferences saved',
-        description: 'Your organization rules are ready to use.'
+        title: 'Personalisation saved',
+        description: 'Your instructions are now included in the agent behavior.'
       })
     } catch (err) {
       showToast({
         tone: 'error',
-        title: 'Unable to save preferences',
+        title: 'Unable to save personalisation',
         description: err.message
       })
     } finally {
@@ -91,7 +92,7 @@ function Preferences() {
   if (loading) {
     return (
       <div className="preferences-container">
-        <h2>Preferences</h2>
+        <h2>Personalise</h2>
         <p style={{ color: 'var(--color-text-secondary)' }}>Loading...</p>
       </div>
     )
@@ -100,10 +101,10 @@ function Preferences() {
   return (
     <div className="preferences-container">
       <div style={{ marginBottom: '2rem' }}>
-        <p className="eyebrow">Settings</p>
-        <h2>Email Preferences</h2>
+        <p className="eyebrow">Personalise</p>
+        <h2>Personalise your agent</h2>
         <p style={{ color: 'var(--color-text-secondary)' }}>
-          Define your email organization rules in natural language
+          Add one or more natural-language instructions. Each item is stored separately and added to the system prompt.
         </p>
       </div>
 
@@ -111,23 +112,23 @@ function Preferences() {
         {preferences.length === 0 ? (
           <div className="info-box" style={{ textAlign: 'center', padding: '2rem' }}>
             <p style={{ color: 'var(--color-text-secondary)' }}>
-              No preferences set yet. Add your first preference below.
+              No personalisations yet. Add your first instruction below.
             </p>
           </div>
         ) : (
           preferences.map((pref, idx) => (
             <div key={pref.id} className="preference-item">
               <label className="preference-label">
-                Preference {idx + 1}
+                Instruction {idx + 1}
               </label>
               <textarea
                 className="preference-input"
                 value={pref.value}
                 onChange={(e) => updatePreference(pref.id, 'value', e.target.value)}
-                placeholder="Example: Move all emails from MyBank to Finances/Personal/Banking"
+                placeholder="Example: Prefer concise answers with a short summary first, then actionable steps."
               />
               <div className="preference-hint">
-                Describe your email rule in plain English
+                Each item can contain one or more sentences.
               </div>
               <div style={{ marginTop: '1rem' }}>
                 <button
@@ -146,7 +147,7 @@ function Preferences() {
 
       <div style={{ display: 'flex', gap: '1rem' }}>
         <button type="button" onClick={addPreference}>
-          Add Preference
+          Add +
         </button>
         <button
           type="button"
@@ -154,23 +155,23 @@ function Preferences() {
           onClick={savePreferences}
           disabled={saving || preferences.length === 0}
         >
-          {saving ? 'Saving...' : 'Save All'}
+          {saving ? 'Saving...' : 'Save'}
         </button>
       </div>
 
       <div className="instruction-box" style={{ marginTop: '2rem' }}>
-        <h3>How it works</h3>
+        <h3>How personalisation works</h3>
         <p>
-          Define your email organization rules in natural language. Towel will use these preferences
-          to automatically organize your emails and create appropriate filters.
+          Each saved item is appended to the system prompt under <strong>PERSONALISED USER INSTRUCTIONS</strong>
+          as a separate bullet point.
         </p>
         <p style={{ marginBottom: 0 }}>
           <strong>Examples:</strong>
         </p>
         <ul style={{ marginTop: '0.5rem', paddingLeft: '1.5rem' }}>
-          <li>Move all emails from @company.com to Work/Company folder</li>
-          <li>Tag all newsletters with Newsletter label</li>
-          <li>Archive all promotional emails from specific senders</li>
+          <li>Prefer bullet lists over long paragraphs.</li>
+          <li>When suggesting cleanup, prioritize reversible actions first.</li>
+          <li>Use tables when comparing multiple label or filter options.</li>
         </ul>
       </div>
     </div>

@@ -1,1 +1,10 @@
 **/*.env
+**/node_modules
+**/*.exe
+backend-server
+backend-server.exe
+dist/
+frontend/dist/
+*.db
+*.db-journal
+data/
