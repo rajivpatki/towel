@@ -8,3 +8,4 @@ frontend/dist/
 *.db
 *.db-journal
 data/
+**/dist/*

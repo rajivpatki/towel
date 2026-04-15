@@ -620,7 +620,6 @@ label span {
   border-radius: 0;
   background: transparent;
   color: var(--color-text-secondary);
-  border: 1px solid transparent;
   box-shadow: none;
   min-height: 44px;
   font-size: 0.9375rem;
@@ -637,13 +636,11 @@ label span {
 .sidebar-section-trigger:hover {
   background: linear-gradient(135deg, rgba(191, 90, 242, 0.08), rgba(100, 210, 255, 0.08));
   color: var(--color-text-primary);
-  border-color: rgba(15, 23, 42, 0.04);
 }
 
 .sidebar-section-trigger.active {
   background: linear-gradient(135deg, rgba(191, 90, 242, 0.12), rgba(100, 210, 255, 0.14));
   color: var(--color-text-primary);
-  border-color: rgba(191, 90, 242, 0.16);
   box-shadow: 0 8px 24px rgba(100, 210, 255, 0.08);
 }
 
@@ -861,7 +858,30 @@ label span {
   flex-direction: column;
   gap: 1rem;
   width: 100%;
-  padding: 1rem 0 5rem;
+  padding: 1rem 0.625rem 5rem 0;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(29, 29, 31, 0.18) transparent;
+}
+
+.chat-messages::-webkit-scrollbar {
+  width: 10px;
+}
+
+.chat-messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chat-messages::-webkit-scrollbar-thumb {
+  background: rgba(29, 29, 31, 0.16);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.chat-messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(29, 29, 31, 0.24);
+  border: 3px solid transparent;
+  background-clip: padding-box;
 }
 
 .chat-empty-state {
@@ -906,7 +926,7 @@ label span {
 }
 
 .message.user .message-avatar {
-  background: var(--color-accent);
+  background: transparent;
   color: white;
 }
 
@@ -984,6 +1004,12 @@ label span {
   background: var(--color-accent);
   color: white;
   border-color: var(--color-accent);
+}
+
+.message.assistant .message-content {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .message.user .markdown-content th,
@@ -1356,7 +1382,7 @@ label span {
   }
 
   .chat-messages {
-    padding: 0.75rem 0 4.5rem;
+    padding: 0.75rem 0.5rem 4.5rem 0;
   }
 
   .message {

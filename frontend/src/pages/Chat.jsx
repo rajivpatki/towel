@@ -379,7 +379,7 @@ function Chat({ urlConversationId = '' }) {
             className="chat-input"
             value={input}
             onChange={(inputEvent) => setInput(inputEvent.target.value)}
-            placeholder="Message Towel..."
+            placeholder="Ask..."
             rows={1}
             onKeyDown={(keyEvent) => {
               if (keyEvent.key === 'Enter' && !keyEvent.shiftKey) {

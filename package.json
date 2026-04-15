@@ -13,8 +13,8 @@
     "dist:all": "electron-builder -mwl"
   },
   "devDependencies": {
-    "electron": "^29.0.0",
-    "electron-builder": "^24.9.1"
+    "electron": "^29.4.6",
+    "electron-builder": "^24.13.3"
   },
   "build": {
     "appId": "com.towel.app",
@@ -34,24 +34,40 @@
       {
         "from": "backend-server",
         "to": "backend-server",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       },
       {
         "from": "backend-server.exe",
         "to": "backend-server.exe",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.productivity"
     },
     "win": {
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "Office"
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3"
   }
 }
