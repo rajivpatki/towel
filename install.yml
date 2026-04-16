@@ -1,8 +1,6 @@
 services:
     backend:
-        build:
-            context: ./backend_go
-            dockerfile: Dockerfile
+        image: ghcr.io/rajivpatki/towel-backend:latest
         restart: unless-stopped
         environment:
             DATABASE_URL: sqlite+aiosqlite:////data/towel.db
@@ -15,9 +13,7 @@ services:
             - "8000:8000"
 
     frontend:
-        build:
-            context: ./frontend
-            dockerfile: Dockerfile
+        image: ghcr.io/rajivpatki/towel-frontend:latest
         restart: unless-stopped
         depends_on:
             - backend

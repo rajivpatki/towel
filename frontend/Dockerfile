@@ -1,9 +1,12 @@
 FROM node:22-alpine AS build
 
+LABEL org.opencontainers.image.source="https://github.com/rajivpatki/YOUR_REPO"
+
 WORKDIR /app
 
 COPY package.json ./package.json
-RUN npm install --no-fund --no-audit && npm cache clean --force
+COPY package-lock.json ./package-lock.json
+RUN npm ci --no-fund --no-audit && npm cache clean --force
 
 COPY public ./public
 COPY index.html ./index.html
@@ -13,6 +16,8 @@ COPY src ./src
 RUN npm run build
 
 FROM nginx:1.27-alpine-slim
+
+LABEL org.opencontainers.image.source="https://github.com/rajivpatki/YOUR_REPO"
 
 COPY nginx-main.conf /etc/nginx/nginx.conf
 COPY nginx.conf /etc/nginx/conf.d/default.conf

@@ -5,6 +5,7 @@ COPY . .
 RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /towel-backend .
 
 FROM scratch
+LABEL org.opencontainers.image.source="https://github.com/rajivpatki/YOUR_REPO"
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=build /towel-backend /usr/local/bin/towel-backend
 EXPOSE 8000
