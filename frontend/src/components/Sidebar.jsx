@@ -82,6 +82,16 @@ function SettingsIcon() {
   )
 }
 
+function TrashIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M3 6h18" />
+      <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
+      <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
+    </svg>
+  )
+}
+
 function Sidebar({ status }) {
   const navigate = useNavigate()
   const location = useLocation()
@@ -190,7 +200,7 @@ function Sidebar({ status }) {
               navigate('/chat')
             }}>
               <div className="nav-icon"><ChatIcon /></div>
-              <span className="sidebar-trigger-label">Chat</span>
+              <span className="sidebar-trigger-label">Chats</span>
               <span className={`sidebar-chevron${isChatOpen ? ' open' : ''}`} aria-hidden="true"><ChevronIcon /></span>
             </button>
           </div>
@@ -208,7 +218,7 @@ function Sidebar({ status }) {
                     onClick={(event) => handleDeleteConversation(event, conversation.id)}
                     disabled={deletingId === conversation.id}
                   >
-                    ×
+                    <TrashIcon />
                   </button>
                 </div>
               ))}

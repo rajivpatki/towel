@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -125,6 +127,52 @@ func (a *App) handleSaveLLMSetup(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, SuccessResponse{Success: true})
 }
 
+func (a *App) handleSaveGeminiSetup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var payload GeminiSetupIn
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	payload.AgentID = strings.TrimSpace(payload.AgentID)
+	if payload.AgentID == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+	log.Printf("gemini setup request received: agent=%s", payload.AgentID)
+	agent, ok := getAgentDefinition(payload.AgentID)
+	if !ok {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Unsupported agent: %s", payload.AgentID))
+		return
+	}
+	if !agentUsesGoogleOAuth(agent) {
+		writeError(w, http.StatusBadRequest, "Selected agent does not use Google OAuth")
+		return
+	}
+	probe, err := a.probeGeminiAccess(agent)
+	if err != nil {
+		log.Printf("gemini setup probe error: agent=%s err=%v", payload.AgentID, err)
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if probe.Status != "ready" {
+		log.Printf("gemini setup probe not ready: agent=%s status=%s detail=%s", payload.AgentID, probe.Status, probe.Detail)
+		writeJSON(w, http.StatusOK, probe)
+		return
+	}
+	if err := a.saveGeminiSelection(agent.AgentID); err != nil {
+		log.Printf("gemini setup save selection failed: agent=%s err=%v", payload.AgentID, err)
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	log.Printf("gemini setup completed: agent=%s", payload.AgentID)
+	probe.Success = true
+	writeJSON(w, http.StatusOK, probe)
+}
+
 func (a *App) handleGmailTools(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -153,7 +201,7 @@ func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	response, err := a.processChatMessage(conversationID, payload.Message, nil)
+	response, err := a.processChatMessage(r.Context(), conversationID, payload.Message, nil)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -181,7 +229,9 @@ func (a *App) handleChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := a.startStreamSession(conversationID); err != nil {
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := a.startStreamSession(conversationID, cancel); err != nil {
+		cancel()
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
@@ -189,8 +239,11 @@ func (a *App) handleChatSession(w http.ResponseWriter, r *http.Request) {
 		emit := func(token string) {
 			_ = a.emitStreamToken(conversationID, token)
 		}
-		response, processErr := a.processChatMessage(conversationID, payload.Message, emit)
+		response, processErr := a.processChatMessage(ctx, conversationID, payload.Message, emit)
 		if processErr != nil {
+			if ctx.Err() == context.Canceled || processErr == context.Canceled {
+				return
+			}
 			_ = a.emitStreamError(conversationID, processErr.Error())
 			return
 		}
@@ -200,6 +253,32 @@ func (a *App) handleChatSession(w http.ResponseWriter, r *http.Request) {
 		ConversationID: conversationID,
 		SessionID:      conversationID,
 	})
+}
+
+func (a *App) handleChatSessionStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var payload ChatSessionStopIn
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	payload.SessionID = strings.TrimSpace(payload.SessionID)
+	if payload.SessionID == "" {
+		writeError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+	if !isValidConversationID(payload.SessionID) {
+		writeError(w, http.StatusBadRequest, "session_id is invalid")
+		return
+	}
+	if !a.stopStreamSession(payload.SessionID) {
+		writeError(w, http.StatusNotFound, "stream session is not active")
+		return
+	}
+	writeJSON(w, http.StatusOK, SuccessResponse{Success: true})
 }
 
 func (a *App) handleChatStreamState(w http.ResponseWriter, r *http.Request) {
@@ -283,7 +362,7 @@ func (a *App) handleChatStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			flusher.Flush()
-			if event.Event == "done" || event.Event == "failed" {
+			if event.Event == "done" || event.Event == "failed" || event.Event == "stopped" {
 				return
 			}
 		case <-keepAlive.C:
@@ -444,6 +523,7 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			agents = append(agents, SettingsAgent{
 				AgentID:       agent.AgentID,
 				Provider:      agent.Provider,
+				AuthMode:      normalizeAgentAuthMode(agent.AuthMode, agent.Provider),
 				Label:         agent.Label,
 				Model:         agent.Model,
 				ReasoningMode: agent.ReasoningMode,
@@ -456,6 +536,7 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			agents = append(agents, SettingsAgent{
 				AgentID:       agent.AgentID,
 				Provider:      agent.Provider,
+				AuthMode:      normalizeAgentAuthMode(agent.AuthMode, agent.Provider),
 				Label:         agent.Label,
 				Model:         agent.Model,
 				ReasoningMode: agent.ReasoningMode,

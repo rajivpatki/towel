@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,7 @@ import (
 	"time"
 )
 
-func (a *App) startStreamSession(sessionID string) error {
+func (a *App) startStreamSession(sessionID string, cancel context.CancelFunc) error {
 	a.streamMu.Lock()
 	defer a.streamMu.Unlock()
 	a.pruneStreamSessionsLocked()
@@ -31,9 +32,31 @@ func (a *App) startStreamSession(sessionID string) error {
 		Events:      make([]streamEvent, 0, 128),
 		NextEventID: 1,
 		Subscribers: make(map[int64]chan streamEvent),
+		Cancel:      cancel,
 		UpdatedAt:   time.Now().UTC(),
 	}
 	return nil
+}
+
+func (a *App) stopStreamSession(sessionID string) bool {
+	a.streamMu.Lock()
+	session, ok := a.streamSessions[sessionID]
+	if !ok || session.Completed || session.Canceled {
+		a.streamMu.Unlock()
+		return false
+	}
+	session.Canceled = true
+	session.Completed = true
+	session.UpdatedAt = time.Now().UTC()
+	cancel := session.Cancel
+	a.streamMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+
+	_ = a.publishStreamEvent(sessionID, "stopped", errorResponse{Detail: "Stopped"})
+	return true
 }
 
 func (a *App) pruneStreamSessionsLocked() {
@@ -116,8 +139,12 @@ func (a *App) publishStreamEvent(sessionID string, eventName string, payload any
 	session.NextEventID++
 	session.Events = append(session.Events, event)
 	session.UpdatedAt = time.Now().UTC()
-	if eventName == "done" || eventName == "failed" {
+	if eventName == "done" || eventName == "failed" || eventName == "stopped" {
 		session.Completed = true
+		if eventName == "stopped" {
+			session.Canceled = true
+		}
+		session.Cancel = nil
 	}
 
 	for _, updates := range session.Subscribers {
@@ -197,12 +224,19 @@ func (a *App) getStreamSessionState(sessionID string) (map[string]any, bool) {
 				hasError = true
 				errorMsg = payload.Detail
 			}
+		case "stopped":
+			var payload errorResponse
+			if err := json.Unmarshal(event.Data, &payload); err == nil {
+				hasError = true
+				errorMsg = payload.Detail
+			}
 		}
 	}
 
 	return map[string]any{
 		"content":       content.String(),
 		"actions":       actions,
+		"canceled":      session.Canceled,
 		"completed":     session.Completed,
 		"last_event_id": lastEventID,
 		"has_error":     hasError,

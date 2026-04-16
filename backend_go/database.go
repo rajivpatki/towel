@@ -47,6 +47,7 @@ func (a *App) initDB() error {
 		`CREATE TABLE IF NOT EXISTS custom_agents (
 			agent_id TEXT PRIMARY KEY,
 			provider TEXT NOT NULL,
+			auth_mode TEXT NOT NULL DEFAULT 'api_key',
 			label TEXT NOT NULL,
 			model TEXT NOT NULL,
 			reasoning_mode TEXT NOT NULL,
@@ -88,6 +89,9 @@ func (a *App) initDB() error {
 		return err
 	}
 	if err := a.ensureColumnExists("setup_state", "google_picture", "TEXT"); err != nil {
+		return err
+	}
+	if err := a.ensureColumnExists("custom_agents", "auth_mode", "TEXT NOT NULL DEFAULT 'api_key'"); err != nil {
 		return err
 	}
 	return nil
@@ -170,12 +174,9 @@ func (a *App) refreshOnboardingState() (SetupState, bool, error) {
 	if err != nil {
 		return SetupState{}, false, err
 	}
-	llmConfigured, err := a.hasSecret("llm_api_key")
+	llmConfigured, err := a.isLLMConfigured(state)
 	if err != nil {
 		return SetupState{}, false, err
-	}
-	if state.SelectedAgentID == nil || strings.TrimSpace(*state.SelectedAgentID) == "" {
-		llmConfigured = false
 	}
 	onboardingCompleted := state.GoogleClientConfigured && state.GoogleAccountConnected && llmConfigured
 	if onboardingCompleted != state.OnboardingCompleted {
@@ -221,9 +222,27 @@ func (a *App) saveLLMCredentials(agentID string, apiKey string) error {
 	if !ok {
 		return fmt.Errorf("Unsupported agent: %s", agentID)
 	}
+	if !agentUsesAPIKey(agent) {
+		return errors.New("Selected agent uses Google OAuth. Use Gemini setup instead of an API key.")
+	}
 	if err := a.upsertSecret("llm_api_key", apiKey); err != nil {
 		return err
 	}
+	return a.saveSelectedAgent(agent)
+}
+
+func (a *App) saveGeminiSelection(agentID string) error {
+	agent, ok := getAgentDefinition(agentID)
+	if !ok {
+		return fmt.Errorf("Unsupported agent: %s", agentID)
+	}
+	if !agentUsesGoogleOAuth(agent) {
+		return errors.New("Selected agent is not configured for Google OAuth")
+	}
+	return a.saveSelectedAgent(agent)
+}
+
+func (a *App) saveSelectedAgent(agent AgentDefinition) error {
 	if _, err := a.db.Exec(`UPDATE setup_state SET selected_agent_id = ?, llm_provider = ?, llm_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, agent.AgentID, agent.Provider, agent.Model); err != nil {
 		return err
 	}
@@ -231,8 +250,22 @@ func (a *App) saveLLMCredentials(agentID string, apiKey string) error {
 	return err
 }
 
+func (a *App) isLLMConfigured(state SetupState) (bool, error) {
+	if state.SelectedAgentID == nil || strings.TrimSpace(*state.SelectedAgentID) == "" {
+		return false, nil
+	}
+	agent, ok := getAgentDefinition(*state.SelectedAgentID)
+	if !ok {
+		return false, nil
+	}
+	if agentUsesGoogleOAuth(agent) {
+		return state.GoogleAccountConnected, nil
+	}
+	return a.hasSecret("llm_api_key")
+}
+
 func (a *App) getCustomAgents() ([]AgentDefinition, error) {
-	rows, err := a.db.Query(`SELECT agent_id, provider, label, model, reasoning_mode, verbosity, base_url FROM custom_agents ORDER BY created_at, agent_id`)
+	rows, err := a.db.Query(`SELECT agent_id, provider, COALESCE(auth_mode, 'api_key'), label, model, reasoning_mode, verbosity, base_url FROM custom_agents ORDER BY created_at, agent_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -240,9 +273,10 @@ func (a *App) getCustomAgents() ([]AgentDefinition, error) {
 	agents := make([]AgentDefinition, 0)
 	for rows.Next() {
 		var agent AgentDefinition
-		if err := rows.Scan(&agent.AgentID, &agent.Provider, &agent.Label, &agent.Model, &agent.ReasoningMode, &agent.Verbosity, &agent.BaseURL); err != nil {
+		if err := rows.Scan(&agent.AgentID, &agent.Provider, &agent.AuthMode, &agent.Label, &agent.Model, &agent.ReasoningMode, &agent.Verbosity, &agent.BaseURL); err != nil {
 			return nil, err
 		}
+		agent.AuthMode = normalizeAgentAuthMode(agent.AuthMode, agent.Provider)
 		agents = append(agents, agent)
 	}
 	return agents, rows.Err()
@@ -255,6 +289,7 @@ func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []Sett
 	for _, item := range agents {
 		agentID := strings.TrimSpace(item.AgentID)
 		provider := strings.TrimSpace(item.Provider)
+		authMode := normalizeAgentAuthMode(strings.TrimSpace(item.AuthMode), provider)
 		label := strings.TrimSpace(item.Label)
 		model := strings.TrimSpace(item.Model)
 		reasoningMode := strings.TrimSpace(item.ReasoningMode)
@@ -269,19 +304,21 @@ func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []Sett
 		if verbosity == "" {
 			verbosity = "medium"
 		}
-		if _, err := a.db.Exec(`INSERT INTO custom_agents (agent_id, provider, label, model, reasoning_mode, verbosity, base_url) VALUES (?, ?, ?, ?, ?, ?, ?)`, agentID, provider, label, model, reasoningMode, verbosity, baseURL); err != nil {
+		if _, err := a.db.Exec(`INSERT INTO custom_agents (agent_id, provider, auth_mode, label, model, reasoning_mode, verbosity, base_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, agentID, provider, authMode, label, model, reasoningMode, verbosity, baseURL); err != nil {
 			return err
 		}
 	}
 	trimmedAPIKey := strings.TrimSpace(apiKey)
-	if trimmedAPIKey != "" {
-		if err := a.upsertSecret("llm_api_key", trimmedAPIKey); err != nil {
-			return err
-		}
-	}
 	selected := ""
 	if selectedAgentID != nil {
 		selected = strings.TrimSpace(*selectedAgentID)
+	}
+	selectedAgent, hasSelectedAgent := getAgentDefinition(selected)
+	shouldStoreAPIKey := trimmedAPIKey != "" && (!hasSelectedAgent || agentUsesAPIKey(selectedAgent))
+	if shouldStoreAPIKey {
+		if err := a.upsertSecret("llm_api_key", trimmedAPIKey); err != nil {
+			return err
+		}
 	}
 	if selected == "" {
 		state, err := a.getSetupState()
@@ -297,7 +334,7 @@ func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []Sett
 		if !ok {
 			return fmt.Errorf("Unsupported agent: %s", selected)
 		}
-		if _, err := a.db.Exec(`UPDATE setup_state SET selected_agent_id = ?, llm_provider = ?, llm_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, agent.AgentID, agent.Provider, agent.Model); err != nil {
+		if err := a.saveSelectedAgent(agent); err != nil {
 			return err
 		}
 	}

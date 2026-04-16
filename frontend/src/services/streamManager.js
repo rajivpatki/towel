@@ -61,6 +61,9 @@ class StreamManager {
         case 'inactive':
           if (callbacks.onInactive) callbacks.onInactive()
           break
+        case 'stopped':
+          if (callbacks.onStopped) callbacks.onStopped(data)
+          break
       }
     })
   }
@@ -77,7 +80,9 @@ class StreamManager {
       currentContent: '',
       finalResponse: null,
       errorMessage: '',
-      lastEventId: 0
+      lastEventId: 0,
+      sessionId: null,
+      isStopped: false
     }
     this.connections.set(conversationId, connection)
 
@@ -102,6 +107,7 @@ class StreamManager {
       const session = await sessionResponse.json()
       const resolvedConversationId = session.conversation_id
       const sessionId = session.session_id || resolvedConversationId
+      connection.sessionId = sessionId
 
       // If we got a new conversation ID, update our tracking
       if (resolvedConversationId !== conversationId) {
@@ -159,6 +165,17 @@ class StreamManager {
         this.closeConnection(resolvedConversationId)
       })
 
+      source.addEventListener('stopped', (streamEvent) => {
+        try {
+          const payload = JSON.parse(streamEvent.data)
+          connection.isActive = false
+          connection.isStopped = true
+          connection.errorMessage = payload.detail || 'Stopped'
+          this.notifyListeners(resolvedConversationId, 'stopped', connection.errorMessage)
+        } catch {}
+        this.closeConnection(resolvedConversationId)
+      })
+
       source.onerror = () => {
         if (source.readyState === EventSource.CLOSED) {
           connection.isActive = false
@@ -211,7 +228,9 @@ class StreamManager {
         currentContent: state.content || '',
         finalResponse: null,
         errorMessage: '',
-        lastEventId: state.last_event_id || 0
+        lastEventId: state.last_event_id || 0,
+        sessionId: conversationId,
+        isStopped: false
       }
       this.connections.set(conversationId, connection)
 
@@ -266,6 +285,17 @@ class StreamManager {
         this.closeConnection(conversationId)
       })
 
+      source.addEventListener('stopped', (streamEvent) => {
+        try {
+          const payload = JSON.parse(streamEvent.data)
+          connection.isActive = false
+          connection.isStopped = true
+          connection.errorMessage = payload.detail || 'Stopped'
+          this.notifyListeners(conversationId, 'stopped', connection.errorMessage)
+        } catch {}
+        this.closeConnection(conversationId)
+      })
+
       source.onerror = () => {
         if (source.readyState === EventSource.CLOSED) {
           connection.isActive = false
@@ -287,6 +317,27 @@ class StreamManager {
       // No active stream or error fetching state
       return null
     }
+  }
+
+  async stopStream(conversationId) {
+    const connection = this.connections.get(conversationId)
+    const sessionId = connection?.sessionId || conversationId
+    if (!sessionId) {
+      return false
+    }
+
+    const response = await fetch(`${apiBaseUrl}/api/chat/session/stop`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId })
+    })
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ detail: 'Failed to stop session' }))
+      throw new Error(error.detail || 'Failed to stop session')
+    }
+
+    return true
   }
 
   closeConnection(conversationId) {
@@ -311,7 +362,9 @@ class StreamManager {
       hasError: connection.hasError,
       currentContent: connection.currentContent,
       finalResponse: connection.finalResponse,
-      errorMessage: connection.errorMessage
+      errorMessage: connection.errorMessage,
+      sessionId: connection.sessionId,
+      isStopped: connection.isStopped
     }
   }
 }

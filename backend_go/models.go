@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"sync"
@@ -30,6 +31,7 @@ type App struct {
 type AgentDefinition struct {
 	AgentID       string `json:"agent_id"`
 	Provider      string `json:"provider"`
+	AuthMode      string `json:"auth_mode"`
 	Label         string `json:"label"`
 	Model         string `json:"model"`
 	ReasoningMode string `json:"reasoning_mode"`
@@ -88,9 +90,22 @@ type LLMSetupIn struct {
 	APIKey  string `json:"api_key"`
 }
 
+type GeminiSetupIn struct {
+	AgentID string `json:"agent_id"`
+}
+
+type GeminiSetupOut struct {
+	Success     bool   `json:"success"`
+	Status      string `json:"status"`
+	Detail      string `json:"detail,omitempty"`
+	EnableURL   string `json:"enable_url,omitempty"`
+	NeedsReauth bool   `json:"needs_reauth,omitempty"`
+}
+
 type SettingsAgent struct {
 	AgentID       string `json:"agent_id"`
 	Provider      string `json:"provider"`
+	AuthMode      string `json:"auth_mode"`
 	Label         string `json:"label"`
 	Model         string `json:"model"`
 	ReasoningMode string `json:"reasoning_mode"`
@@ -108,6 +123,7 @@ type SettingsOut struct {
 type SettingsAgentInput struct {
 	AgentID       string `json:"agent_id"`
 	Provider      string `json:"provider"`
+	AuthMode      string `json:"auth_mode"`
 	Label         string `json:"label"`
 	Model         string `json:"model"`
 	ReasoningMode string `json:"reasoning_mode"`
@@ -135,6 +151,10 @@ type ChatMessageOut struct {
 type ChatSessionStartOut struct {
 	ConversationID string `json:"conversation_id"`
 	SessionID      string `json:"session_id"`
+}
+
+type ChatSessionStopIn struct {
+	SessionID string `json:"session_id"`
 }
 
 type ConversationMessage struct {
@@ -210,7 +230,9 @@ type streamSession struct {
 	Events      []streamEvent
 	NextEventID int64
 	Subscribers map[int64]chan streamEvent
+	Cancel      context.CancelFunc
 	Completed   bool
+	Canceled    bool
 	UpdatedAt   time.Time
 }
 
@@ -233,6 +255,7 @@ var agentDefinitions = []AgentDefinition{
 	{
 		AgentID:       "openai:gpt-5.4",
 		Provider:      "openai",
+		AuthMode:      "api_key",
 		Label:         "OpenAI GPT 5.4",
 		Model:         "gpt-5.4",
 		ReasoningMode: "thinking",
@@ -240,8 +263,19 @@ var agentDefinitions = []AgentDefinition{
 		BaseURL:       "https://api.openai.com/v1",
 	},
 	{
+		AgentID:       "gemini:gemini-2.5-flash",
+		Provider:      "gemini",
+		AuthMode:      "google_oauth",
+		Label:         "Google Gemini 2.5 Flash",
+		Model:         "gemini-2.5-flash",
+		ReasoningMode: "thinking",
+		Verbosity:     "medium",
+		BaseURL:       "https://generativelanguage.googleapis.com/v1beta",
+	},
+	{
 		AgentID:       "deepseek:deepseek-thinking",
 		Provider:      "deepseek",
+		AuthMode:      "api_key",
 		Label:         "DeepSeek Thinking",
 		Model:         "deepseek-reasoner",
 		ReasoningMode: "thinking",

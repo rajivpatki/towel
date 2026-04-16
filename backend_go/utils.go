@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 func getAgentDefinition(agentID string) (AgentDefinition, bool) {
 	for _, agent := range agentDefinitions {
 		if agent.AgentID == agentID {
+			agent.AuthMode = normalizeAgentAuthMode(agent.AuthMode, agent.Provider)
 			return agent, true
 		}
 	}
@@ -21,12 +23,32 @@ func getAgentDefinition(agentID string) (AgentDefinition, bool) {
 		if err == nil {
 			for _, agent := range agents {
 				if agent.AgentID == agentID {
+					agent.AuthMode = normalizeAgentAuthMode(agent.AuthMode, agent.Provider)
 					return agent, true
 				}
 			}
 		}
 	}
 	return AgentDefinition{}, false
+}
+
+func normalizeAgentAuthMode(authMode string, provider string) string {
+	mode := strings.ToLower(strings.TrimSpace(authMode))
+	if mode != "" {
+		return mode
+	}
+	if strings.EqualFold(strings.TrimSpace(provider), "gemini") {
+		return "google_oauth"
+	}
+	return "api_key"
+}
+
+func agentUsesGoogleOAuth(agent AgentDefinition) bool {
+	return normalizeAgentAuthMode(agent.AuthMode, agent.Provider) == "google_oauth"
+}
+
+func agentUsesAPIKey(agent AgentDefinition) bool {
+	return normalizeAgentAuthMode(agent.AuthMode, agent.Provider) == "api_key"
 }
 
 func randomToken(size int) (string, error) {

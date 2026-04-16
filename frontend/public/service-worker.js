@@ -1,12 +1,7 @@
 const CACHE_NAME = 'towel-v1';
 const urlsToCache = [
   '/',
-  '/index.html',
-  '/src/main.jsx',
-  '/src/App.jsx',
-  '/src/towel.svg',
-  '/src/styles.css',
-  '/src/design-overrides.css'
+  '/index.html'
 ];
 
 // Install event - cache resources

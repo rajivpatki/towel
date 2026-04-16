@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,7 +53,10 @@ func buildChatSystemPrompt(preferences []PreferenceItem) string {
 	return prompt + "\n\nPERSONALISED USER INSTRUCTIONS:\n" + strings.Join(lines, "\n")
 }
 
-func (a *App) processChatMessage(conversationID string, userMessage string, emitToken func(string)) (ChatMessageOut, error) {
+func (a *App) processChatMessage(ctx context.Context, conversationID string, userMessage string, emitToken func(string)) (ChatMessageOut, error) {
+	if err := ctx.Err(); err != nil {
+		return ChatMessageOut{}, err
+	}
 	state, err := a.getSetupState()
 	if err != nil {
 		return ChatMessageOut{}, err
@@ -60,16 +64,13 @@ func (a *App) processChatMessage(conversationID string, userMessage string, emit
 	if state.SelectedAgentID == nil || strings.TrimSpace(*state.SelectedAgentID) == "" {
 		return ChatMessageOut{}, errors.New("LLM not configured. Please complete setup first.")
 	}
-	apiKey, err := a.getSecret("llm_api_key")
-	if err != nil {
-		return ChatMessageOut{}, err
-	}
-	if strings.TrimSpace(apiKey) == "" {
-		return ChatMessageOut{}, errors.New("LLM API key not found. Please complete setup first.")
-	}
 	agent, ok := getAgentDefinition(*state.SelectedAgentID)
 	if !ok {
 		return ChatMessageOut{}, fmt.Errorf("Unsupported agent: %s", *state.SelectedAgentID)
+	}
+	credential, err := a.getLLMCredential(agent)
+	if err != nil {
+		return ChatMessageOut{}, err
 	}
 	preferences, err := a.getAllPreferences()
 	if err != nil {
@@ -89,17 +90,22 @@ func (a *App) processChatMessage(conversationID string, userMessage string, emit
 	}
 
 	systemPrompt := buildChatSystemPrompt(preferences)
-	messages := make([]map[string]any, 0, len(history)+1)
-	messages = append(messages, map[string]any{"role": "system", "content": systemPrompt})
-	for _, item := range history {
-		role := strings.TrimSpace(item.Role)
-		if role != "user" && role != "assistant" {
-			continue
+	assistantMessage := ""
+	actions := make([]string, 0)
+	if agentUsesGoogleOAuth(agent) {
+		assistantMessage, actions, err = a.callGeminiLLM(ctx, agent, credential, systemPrompt, history, emitToken)
+	} else {
+		messages := make([]map[string]any, 0, len(history)+1)
+		messages = append(messages, map[string]any{"role": "system", "content": systemPrompt})
+		for _, item := range history {
+			role := strings.TrimSpace(item.Role)
+			if role != "user" && role != "assistant" {
+				continue
+			}
+			messages = append(messages, map[string]any{"role": role, "content": item.Content})
 		}
-		messages = append(messages, map[string]any{"role": role, "content": item.Content})
+		assistantMessage, actions, err = a.callLLM(ctx, agent, credential, messages, emitToken)
 	}
-
-	assistantMessage, actions, err := a.callLLM(agent, apiKey, messages, emitToken)
 	if err != nil {
 		return ChatMessageOut{}, fmt.Errorf("Chat processing failed: %v", err)
 	}
@@ -119,12 +125,15 @@ func (a *App) processChatMessage(conversationID string, userMessage string, emit
 	}, nil
 }
 
-func (a *App) callLLM(agent AgentDefinition, apiKey string, messages []map[string]any, emitToken func(string)) (string, []string, error) {
+func (a *App) callLLM(ctx context.Context, agent AgentDefinition, apiKey string, messages []map[string]any, emitToken func(string)) (string, []string, error) {
 	tools := buildLLMToolsPayload()
 	actions := make([]string, 0)
 
 	for iteration := 0; iteration < maxToolCallIterations; iteration++ {
-		message, err := a.callLLMOnce(agent, apiKey, messages, tools)
+		if err := ctx.Err(); err != nil {
+			return "", actions, err
+		}
+		message, err := a.callLLMOnce(ctx, agent, apiKey, messages, tools)
 		if err != nil {
 			return "", actions, err
 		}
@@ -148,16 +157,9 @@ func (a *App) callLLM(agent AgentDefinition, apiKey string, messages []map[strin
 		}
 		messages = append(messages, assistantMessage)
 
-		if text := strings.TrimSpace(content); text != "" {
-			note := "Assistant: " + text
-			actions = append(actions, note)
-			emitTokenizedText(note+"\n", emitToken)
-		}
-
 		for toolIndex, toolCall := range message.ToolCalls {
 			result, action, actionType := a.executeToolCall(toolCall)
 			actions = append(actions, action)
-			emitTokenizedText(action+"\n", emitToken)
 			if err := a.logActionHistory(actionType, action, result); err != nil {
 				return "", actions, fmt.Errorf("failed to record tool call: %w", err)
 			}
@@ -172,7 +174,6 @@ func (a *App) callLLM(agent AgentDefinition, apiKey string, messages []map[strin
 				"content":      result,
 			})
 		}
-		emitTokenizedText("\n", emitToken)
 	}
 
 	return "", actions, fmt.Errorf("upstream LLM exceeded tool-call iteration limit (%d)", maxToolCallIterations)
@@ -221,7 +222,7 @@ func convertToolCalls(toolCalls []llmToolCall) []map[string]any {
 	return converted
 }
 
-func (a *App) callLLMOnce(agent AgentDefinition, apiKey string, messages []map[string]any, tools []map[string]any) (llmResponseMessage, error) {
+func (a *App) callLLMOnce(ctx context.Context, agent AgentDefinition, apiKey string, messages []map[string]any, tools []map[string]any) (llmResponseMessage, error) {
 	requestPayload := map[string]any{
 		"model":                 agent.Model,
 		"messages":              messages,
@@ -234,7 +235,7 @@ func (a *App) callLLMOnce(agent AgentDefinition, apiKey string, messages []map[s
 	if err != nil {
 		return llmResponseMessage{}, err
 	}
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(agent.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(agent.BaseURL, "/")+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return llmResponseMessage{}, err
 	}

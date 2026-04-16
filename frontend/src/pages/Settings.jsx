@@ -26,12 +26,20 @@ function newAgent() {
   return {
     agent_id: `custom-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
     provider: '',
+    auth_mode: 'api_key',
     label: '',
     model: '',
     reasoning_mode: 'standard',
     verbosity: 'medium',
     base_url: '',
     is_custom: true
+  }
+}
+
+function normalizeAgent(agent) {
+  return {
+    ...agent,
+    auth_mode: agent?.auth_mode || (agent?.provider === 'gemini' ? 'google_oauth' : 'api_key')
   }
 }
 
@@ -46,6 +54,7 @@ function Settings() {
 
   const customAgents = useMemo(() => agents.filter((agent) => agent.is_custom), [agents])
   const selectedAgent = useMemo(() => agents.find((agent) => agent.agent_id === selectedAgentId) || null, [agents, selectedAgentId])
+  const selectedUsesAPIKey = selectedAgent ? selectedAgent.auth_mode !== 'google_oauth' : true
 
   async function loadSettings() {
     try {
@@ -53,7 +62,7 @@ function Settings() {
       const data = await parseResponse(response)
       setSelectedAgentId(data.selected_agent_id || data.agents?.[0]?.agent_id || '')
       setHasApiKey(Boolean(data.has_api_key))
-      setAgents(Array.isArray(data.agents) ? data.agents : [])
+      setAgents(Array.isArray(data.agents) ? data.agents.map(normalizeAgent) : [])
     } catch (err) {
       showToast({
         tone: 'error',
@@ -106,6 +115,7 @@ function Settings() {
           agents: customAgents.map((agent) => ({
             agent_id: agent.agent_id,
             provider: agent.provider,
+            auth_mode: agent.auth_mode,
             label: agent.label,
             model: agent.model,
             reasoning_mode: agent.reasoning_mode,
@@ -120,7 +130,9 @@ function Settings() {
       showToast({
         tone: 'success',
         title: 'Settings saved',
-        description: 'Your model configuration and API key were updated.'
+        description: selectedUsesAPIKey
+          ? 'Your model configuration and API key were updated.'
+          : 'Your model configuration was updated. Gemini continues to use your Google OAuth connection.'
       })
     } catch (err) {
       showToast({
@@ -185,6 +197,9 @@ function Settings() {
                 <p>{selectedAgent.provider} · {selectedAgent.model}</p>
               </div>
               <div className="agent-badges">
+                <span className={`status-pill ${selectedUsesAPIKey ? 'ok' : 'pending'}`}>
+                  {selectedUsesAPIKey ? 'API key' : 'Google OAuth'}
+                </span>
                 <span className="status-pill ok">{selectedAgent.reasoning_mode}</span>
                 <span className="status-pill ok">{selectedAgent.verbosity}</span>
                 {selectedAgent.is_custom ? <span className="status-pill pending">Custom</span> : null}

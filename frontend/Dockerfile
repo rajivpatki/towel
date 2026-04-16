@@ -1,16 +1,16 @@
+FROM node:22-alpine AS build
 
- FROM node:22-alpine AS build
+WORKDIR /app
 
- WORKDIR /app
+COPY package.json ./package.json
+RUN npm install --no-fund --no-audit && npm cache clean --force
 
- COPY package.json ./package.json
- RUN npm install --no-fund --no-audit && npm cache clean --force
+COPY public ./public
+COPY index.html ./index.html
+COPY vite.config.js ./vite.config.js
+COPY src ./src
 
- COPY index.html ./index.html
- COPY vite.config.js ./vite.config.js
- COPY src ./src
-
- RUN npm run build
+RUN npm run build
 
 FROM nginx:1.27-alpine-slim
 
