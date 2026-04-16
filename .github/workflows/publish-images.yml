@@ -1,83 +1,83 @@
 name: Publish Docker images to GHCR
 
 on:
-    push:
-        branches: [main]
-        tags:
-            - "v*"
-    workflow_dispatch:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+  workflow_dispatch:
 
 permissions:
-    contents: read
-    packages: write
+  contents: read
+  packages: write
 
 env:
-    REGISTRY: ghcr.io
-    OWNER: ${{ github.repository_owner }}
+  REGISTRY: ghcr.io
+  OWNER: ${{ github.repository_owner }}
 
 jobs:
-    build-and-push-backend:
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout
-                uses: actions/checkout@v4
+  build-and-push-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-            - name: Log in to GHCR
-                uses: docker/login-action@v4
-                with:
-                    registry: ${{ env.REGISTRY }}
-                    username: ${{ github.actor }}
-                    password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Extract backend metadata
-                id: meta
-                uses: docker/metadata-action@v5
-                with:
-                    images: ${{ env.REGISTRY }}/${{ env.OWNER }}/towel-backend
-                    tags: |
-                        type=raw,value=latest,enable={{is_default_branch}}
-                        type=ref,event=branch
-                        type=ref,event=tag
-                        type=sha
+      - name: Extract backend metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/towel-backend
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
 
-            - name: Build and push backend
-                uses: docker/build-push-action@v6
-                with:
-                    context: ./backend_go
-                    file: ./backend_go/Dockerfile
-                    push: true
-                    tags: ${{ steps.meta.outputs.tags }}
-                    labels: ${{ steps.meta.outputs.labels }}
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend_go
+          file: ./backend_go/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
-    build-and-push-frontend:
-        runs-on: ubuntu-latest
-        steps:
-            - name: Checkout
-                uses: actions/checkout@v4
+  build-and-push-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-            - name: Log in to GHCR
-                uses: docker/login-action@v4
-                with:
-                    registry: ${{ env.REGISTRY }}
-                    username: ${{ github.actor }}
-                    password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Extract frontend metadata
-                id: meta
-                uses: docker/metadata-action@v5
-                with:
-                    images: ${{ env.REGISTRY }}/${{ env.OWNER }}/towel-frontend
-                    tags: |
-                        type=raw,value=latest,enable={{is_default_branch}}
-                        type=ref,event=branch
-                        type=ref,event=tag
-                        type=sha
+      - name: Extract frontend metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.OWNER }}/towel-frontend
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
 
-            - name: Build and push frontend
-                uses: docker/build-push-action@v6
-                with:
-                    context: ./frontend
-                    file: ./frontend/Dockerfile
-                    push: true
-                    tags: ${{ steps.meta.outputs.tags }}
-                    labels: ${{ steps.meta.outputs.labels }}
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
