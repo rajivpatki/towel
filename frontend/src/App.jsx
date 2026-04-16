@@ -30,9 +30,9 @@ async function parseResponse(response) {
   throw new Error(detail)
 }
 
-function ChatWrapper() {
+function ChatWrapper({ status }) {
   const { conversationId } = useParams()
-  return <Chat urlConversationId={conversationId || ''} />
+  return <Chat urlConversationId={conversationId || ''} status={status} />
 }
 
 function AuthenticatedLayout({ status, onStatusChange }) {
@@ -44,8 +44,8 @@ function AuthenticatedLayout({ status, onStatusChange }) {
       <Sidebar status={status} onStatusChange={onStatusChange} />
       <div className={`main-content${isChatPage ? ' chat-main-content' : ''}`}>
         <Routes>
-          <Route path="/chat" element={<ChatWrapper />} />
-          <Route path="/chat/:conversationId" element={<ChatWrapper />} />
+          <Route path="/chat" element={<ChatWrapper status={status} />} />
+          <Route path="/chat/:conversationId" element={<ChatWrapper status={status} />} />
           <Route path="/history" element={<History />} />
           <Route path="/personalise" element={<Preferences />} />
           <Route path="/settings" element={<Settings />} />

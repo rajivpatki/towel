@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useToast } from '../components/ToastProvider'
+import CustomSelect from '../components/CustomSelect'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
 
@@ -165,13 +166,16 @@ function Settings() {
 
           <label>
             <span>Selected model</span>
-            <select value={selectedAgentId} onChange={(event) => setSelectedAgentId(event.target.value)}>
-              {agents.map((agent) => (
-                <option key={agent.agent_id} value={agent.agent_id}>
-                  {agent.label}
-                </option>
-              ))}
-            </select>
+            <CustomSelect
+              value={selectedAgentId}
+              onChange={(value) => setSelectedAgentId(value)}
+              options={agents.map((agent) => ({
+                value: agent.agent_id,
+                label: agent.label
+              }))}
+              placeholder="Select a model..."
+              label="Selected model"
+            />
           </label>
 
           {selectedAgent ? (
@@ -256,18 +260,30 @@ function Settings() {
                   </label>
                   <label>
                     <span>Reasoning mode</span>
-                    <select value={agent.reasoning_mode} onChange={(event) => updateCustomAgent(agent.agent_id, 'reasoning_mode', event.target.value)}>
-                      <option value="standard">standard</option>
-                      <option value="thinking">thinking</option>
-                    </select>
+                    <CustomSelect
+                      value={agent.reasoning_mode}
+                      onChange={(value) => updateCustomAgent(agent.agent_id, 'reasoning_mode', value)}
+                      options={[
+                        { value: 'standard', label: 'standard' },
+                        { value: 'thinking', label: 'thinking' }
+                      ]}
+                      placeholder="Select reasoning mode..."
+                      label="Reasoning mode"
+                    />
                   </label>
                   <label>
                     <span>Verbosity</span>
-                    <select value={agent.verbosity} onChange={(event) => updateCustomAgent(agent.agent_id, 'verbosity', event.target.value)}>
-                      <option value="low">low</option>
-                      <option value="medium">medium</option>
-                      <option value="high">high</option>
-                    </select>
+                    <CustomSelect
+                      value={agent.verbosity}
+                      onChange={(value) => updateCustomAgent(agent.agent_id, 'verbosity', value)}
+                      options={[
+                        { value: 'low', label: 'low' },
+                        { value: 'medium', label: 'medium' },
+                        { value: 'high', label: 'high' }
+                      ]}
+                      placeholder="Select verbosity..."
+                      label="Verbosity"
+                    />
                   </label>
                 </div>
 

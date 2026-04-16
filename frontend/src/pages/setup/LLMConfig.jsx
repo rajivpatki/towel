@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useToast } from '../../components/ToastProvider'
+import CustomSelect from '../../components/CustomSelect'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
 
@@ -119,16 +120,16 @@ function LLMConfig({ onStatusChange }) {
         <form className="stack-form" onSubmit={handleSubmit}>
           <label>
             <span>AI Agent</span>
-            <select
+            <CustomSelect
               value={form.agent_id}
-              onChange={(e) => setForm((c) => ({ ...c, agent_id: e.target.value }))}
-            >
-              {status.available_agents.map((agent) => (
-                <option value={agent.agent_id} key={agent.agent_id}>
-                  {agent.label}
-                </option>
-              ))}
-            </select>
+              onChange={(value) => setForm((c) => ({ ...c, agent_id: value }))}
+              options={status.available_agents.map((agent) => ({
+                value: agent.agent_id,
+                label: agent.label
+              }))}
+              placeholder="Select AI Agent..."
+              label="AI Agent"
+            />
           </label>
 
           <label>

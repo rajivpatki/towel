@@ -413,3 +413,7 @@ These query parameters can be combined in any way to create complex searches. Yo
 3. Use the "has" operator to search for emails with specific characteristics.
 > User: How can I clean up emails that are consuming my google storage space
 > Assistant: has:attachment larger:5M in:inbox -has:userlabels
+
+### Tips
+
+- If a user asks you to create a filter that performs an automatic action on future emails, such as archiving, marking as unread or tagging a label, evaluate if, or ask the user if they would like to apply the filter to past emails as well. You can use `batchModify` tool to apply the filter to past emails.

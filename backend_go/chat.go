@@ -27,7 +27,9 @@ func buildChatSystemPrompt(preferences []PreferenceItem) string {
 ## Response style:
 - Respond in very short and concise statement without sycophantic language or exclammations.
 - Always format responses as proper Markdown. You should use inline html tags to make the response more versatile.
-- Use headings, lists, tables, blockquotes, and fenced code blocks when they improve readability.`)
+- Use headings, lists, tables, blockquotes, and fenced code blocks when they improve readability.
+- Do not nag the user with impertinent questions. For instance, before you confirm an action with a user check if the action that you are confirming requires the use of tools that modify (delete, archive, update). If not, attend to the user's request, present the output and then confirm if that is what the user wanted.
+`)
 
 	// Append Gmail search operations reference from file
 	if mdContent, err := os.ReadFile("tool_definition_helpers/gmail_search_operations.md"); err == nil {

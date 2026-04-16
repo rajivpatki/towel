@@ -17,6 +17,8 @@ const gmailAPIBase = "https://www.googleapis.com/gmail/v1"
 const googleTokenEndpoint = "https://oauth2.googleapis.com/token"
 const gmailTokenRefreshLeadTime = 5 * time.Minute
 
+type GmailToolFunc func(accessToken string, arguments map[string]any) (string, int, error)
+
 // TokenBundle represents the stored Google OAuth token response
 type TokenBundle struct {
 	AccessToken   string `json:"access_token"`
@@ -184,29 +186,26 @@ func (a *App) executeGmailTool(toolName string, arguments map[string]any) (strin
 	return result, err
 }
 
+func (a *App) gmailToolMapping() map[string]GmailToolFunc {
+	return map[string]GmailToolFunc{
+		"users.labels.list":             a.gmailUsersLabelsList,
+		"users.labels.create":           a.gmailUsersLabelsCreate,
+		"users.messages.list":           a.gmailUsersMessagesList,
+		"users.messages.get":            a.gmailUsersMessagesGet,
+		"users.messages.batchModify":    a.gmailUsersMessagesBatchModify,
+		"users.messages.modify":         a.gmailUsersMessagesModify,
+		"users.settings.filters.create": a.gmailUsersSettingsFiltersCreate,
+		"users.threads.list":            a.gmailUsersThreadsList,
+		"users.threads.get":             a.gmailUsersThreadsGet,
+	}
+}
+
 func (a *App) tryExecuteGmailTool(toolName, accessToken string, arguments map[string]any) (string, int, error) {
-	switch toolName {
-	case "users.labels.list":
-		return a.gmailUsersLabelsList(accessToken, arguments)
-	case "users.labels.create":
-		return a.gmailUsersLabelsCreate(accessToken, arguments)
-	case "users.messages.list":
-		return a.gmailUsersMessagesList(accessToken, arguments)
-	case "users.messages.get":
-		return a.gmailUsersMessagesGet(accessToken, arguments)
-	case "users.messages.batchModify":
-		return a.gmailUsersMessagesBatchModify(accessToken, arguments)
-	case "users.messages.modify":
-		return a.gmailUsersMessagesModify(accessToken, arguments)
-	case "users.settings.filters.create":
-		return a.gmailUsersSettingsFiltersCreate(accessToken, arguments)
-	case "users.threads.list":
-		return a.gmailUsersThreadsList(accessToken, arguments)
-	case "users.threads.get":
-		return a.gmailUsersThreadsGet(accessToken, arguments)
-	default:
+	toolFunc, ok := a.gmailToolMapping()[toolName]
+	if !ok {
 		return "", 0, fmt.Errorf("unknown Gmail tool: %s", toolName)
 	}
+	return toolFunc(accessToken, arguments)
 }
 
 func gmailUserID(arguments map[string]any) string {

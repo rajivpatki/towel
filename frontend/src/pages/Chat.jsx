@@ -47,7 +47,7 @@ function MarkdownMessage({ content }) {
   )
 }
 
-function Chat({ urlConversationId = '' }) {
+function Chat({ urlConversationId = '', status }) {
   const navigate = useNavigate()
   const [messages, setMessages] = useState([])
   const [input, setInput] = useState('')
@@ -55,6 +55,17 @@ function Chat({ urlConversationId = '' }) {
   const [conversationId, setConversationId] = useState(urlConversationId)
   const messagesEndRef = useRef(null)
   const streamUnsubscribeRef = useRef(null)
+  const textareaRef = useRef(null)
+
+  const profilePicture = status?.google_account_connected ? `${apiBaseUrl}/api/profile/image` : ''
+
+  // Auto-resize textarea based on content
+  useEffect(() => {
+    const textarea = textareaRef.current
+    if (!textarea) return
+    textarea.style.height = 'auto'
+    textarea.style.height = `${Math.min(textarea.scrollHeight, window.innerHeight * 0.2)}px`
+  }, [input])
 
   // Sync conversationId with URL
   useEffect(() => {
@@ -340,7 +351,15 @@ function Chat({ urlConversationId = '' }) {
           messages.map((msg, idx) => (
             <div key={msg.id || idx} className={`message ${msg.role}`}>
               <div className="message-avatar">
-                {msg.role === 'user' ? 'You' : 'AI'}
+                {msg.role === 'user' ? (
+                  profilePicture ? (
+                    <img className="message-avatar-image" src={profilePicture} alt="You" />
+                  ) : (
+                    'You'
+                  )
+                ) : (
+                  'AI'
+                )}
               </div>
               <div className={`message-content${msg.error ? ' error' : ''}`}>
                 {msg.role === 'assistant' ? (
@@ -376,6 +395,7 @@ function Chat({ urlConversationId = '' }) {
       <form className="chat-form" onSubmit={handleSubmit}>
         <div className="chat-input-bar">
           <textarea
+            ref={textareaRef}
             className="chat-input"
             value={input}
             onChange={(inputEvent) => setInput(inputEvent.target.value)}
