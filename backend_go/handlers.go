@@ -421,11 +421,86 @@ func (a *App) handlePreferences(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		state, err := a.getSetupState()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		hasAPIKey, err := a.hasSecret("llm_api_key")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		customAgents, err := a.getCustomAgents()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		agents := make([]SettingsAgent, 0, len(agentDefinitions)+len(customAgents))
+		for _, agent := range agentDefinitions {
+			agents = append(agents, SettingsAgent{
+				AgentID:       agent.AgentID,
+				Provider:      agent.Provider,
+				Label:         agent.Label,
+				Model:         agent.Model,
+				ReasoningMode: agent.ReasoningMode,
+				Verbosity:     agent.Verbosity,
+				BaseURL:       agent.BaseURL,
+				IsCustom:      false,
+			})
+		}
+		for _, agent := range customAgents {
+			agents = append(agents, SettingsAgent{
+				AgentID:       agent.AgentID,
+				Provider:      agent.Provider,
+				Label:         agent.Label,
+				Model:         agent.Model,
+				ReasoningMode: agent.ReasoningMode,
+				Verbosity:     agent.Verbosity,
+				BaseURL:       agent.BaseURL,
+				IsCustom:      true,
+			})
+		}
+		writeJSON(w, http.StatusOK, SettingsOut{
+			SelectedAgentID: state.SelectedAgentID,
+			HasAPIKey:       hasAPIKey,
+			Agents:          agents,
+		})
+	case http.MethodPost:
+		var payload SettingsIn
+		if err := decodeJSON(r, &payload); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := a.saveSettings(payload.SelectedAgentID, payload.APIKey, payload.Agents); err != nil {
+			statusCode := http.StatusInternalServerError
+			if strings.Contains(err.Error(), "Unsupported agent") {
+				statusCode = http.StatusBadRequest
+			}
+			writeError(w, statusCode, fmt.Sprintf("Failed to save settings: %v", err))
+			return
+		}
+		writeJSON(w, http.StatusOK, SuccessResponse{Success: true})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+	}
+}
+
 func (a *App) buildSetupStatus() (SetupStatus, error) {
 	state, llmConfigured, err := a.refreshOnboardingState()
 	if err != nil {
 		return SetupStatus{}, err
 	}
+	customAgents, err := a.getCustomAgents()
+	if err != nil {
+		return SetupStatus{}, err
+	}
+	availableAgents := make([]AgentDefinition, 0, len(agentDefinitions)+len(customAgents))
+	availableAgents = append(availableAgents, agentDefinitions...)
+	availableAgents = append(availableAgents, customAgents...)
 	return SetupStatus{
 		GoogleClientConfigured: state.GoogleClientConfigured,
 		GoogleAccountConnected: state.GoogleAccountConnected,
@@ -435,7 +510,7 @@ func (a *App) buildSetupStatus() (SetupStatus, error) {
 		LLMConfigured:          llmConfigured,
 		SelectedAgentID:        state.SelectedAgentID,
 		OnboardingCompleted:    state.OnboardingCompleted,
-		AvailableAgents:        agentDefinitions,
+		AvailableAgents:        availableAgents,
 		GmailTools:             gmailToolDefinitions,
 	}, nil
 }

@@ -7,28 +7,32 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
 func buildChatSystemPrompt(preferences []PreferenceItem) string {
-	prompt := strings.TrimSpace(`You are Towel, a careful Gmail organization assistant.
+	prompt := strings.TrimSpace(`You are Towel, a Gmail assistant with capabilities to manage on behalf of the user.
 
-Objectives:
+## Objectives:
 - Help the user triage inboxes, clean clutter, and build sustainable Gmail workflows.
 - Prefer safe, reversible actions.
 
-Tool policy:
+## Tool policy:
 - Use tools when a claim depends on mailbox state.
 - Never invent tool results.
 - If tool outputs are partial or placeholder, say so clearly and propose the next safest step.
 - Treat destructive actions as pseudo-actions under the Towel/ namespace.
 
-Response style:
-- Be concise and practical.
-- Always format responses as proper Markdown.
-- Use headings, lists, tables, blockquotes, and fenced code blocks when they improve readability.
-- You may use supported inline HTML tags sparingly when they make the response clearer and more versatile.
-- After any tool usage, summarize what happened and what to do next.`)
+## Response style:
+- Respond in very short and concise statement without sycophantic language or exclammations.
+- Always format responses as proper Markdown. You should use inline html tags to make the response more versatile.
+- Use headings, lists, tables, blockquotes, and fenced code blocks when they improve readability.`)
+
+	// Append Gmail search operations reference from file
+	if mdContent, err := os.ReadFile("tool_definition_helpers/gmail_search_operations.md"); err == nil {
+		prompt += "\n\n" + string(mdContent)
+	}
 	if len(preferences) == 0 {
 		return prompt
 	}
@@ -176,15 +180,20 @@ func buildLLMToolsPayload() []map[string]any {
 	tools := make([]map[string]any, 0, len(gmailToolDefinitions))
 	for _, tool := range gmailToolDefinitions {
 		functionName := strings.ReplaceAll(tool.Name, ".", "_")
+		parameters := tool.Parameters
+		if parameters == nil {
+			parameters = map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{},
+				"additionalProperties": false,
+			}
+		}
 		tools = append(tools, map[string]any{
 			"type": "function",
 			"function": map[string]any{
 				"name":        functionName,
 				"description": tool.Description,
-				"parameters": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{},
-				},
+				"parameters":  parameters,
 			},
 		})
 	}
@@ -277,7 +286,7 @@ func (a *App) executeToolCall(call llmToolCall) (string, string, string) {
 	// Execute real Gmail tool if available
 	var resultJSON string
 	var execErr error
-	if strings.HasPrefix(toolName, "gmail.") {
+	if strings.HasPrefix(toolName, "users.") {
 		resultJSON, execErr = a.executeGmailTool(toolName, arguments)
 	}
 

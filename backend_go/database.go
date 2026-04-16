@@ -44,6 +44,17 @@ func (a *App) initDB() error {
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS custom_agents (
+			agent_id TEXT PRIMARY KEY,
+			provider TEXT NOT NULL,
+			label TEXT NOT NULL,
+			model TEXT NOT NULL,
+			reasoning_mode TEXT NOT NULL,
+			verbosity TEXT NOT NULL,
+			base_url TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
 		`CREATE TABLE IF NOT EXISTS action_history (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			action_type TEXT NOT NULL,
@@ -215,6 +226,80 @@ func (a *App) saveLLMCredentials(agentID string, apiKey string) error {
 	}
 	if _, err := a.db.Exec(`UPDATE setup_state SET selected_agent_id = ?, llm_provider = ?, llm_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, agent.AgentID, agent.Provider, agent.Model); err != nil {
 		return err
+	}
+	_, _, err := a.refreshOnboardingState()
+	return err
+}
+
+func (a *App) getCustomAgents() ([]AgentDefinition, error) {
+	rows, err := a.db.Query(`SELECT agent_id, provider, label, model, reasoning_mode, verbosity, base_url FROM custom_agents ORDER BY created_at, agent_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	agents := make([]AgentDefinition, 0)
+	for rows.Next() {
+		var agent AgentDefinition
+		if err := rows.Scan(&agent.AgentID, &agent.Provider, &agent.Label, &agent.Model, &agent.ReasoningMode, &agent.Verbosity, &agent.BaseURL); err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	return agents, rows.Err()
+}
+
+func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []SettingsAgentInput) error {
+	if _, err := a.db.Exec(`DELETE FROM custom_agents`); err != nil {
+		return err
+	}
+	for _, item := range agents {
+		agentID := strings.TrimSpace(item.AgentID)
+		provider := strings.TrimSpace(item.Provider)
+		label := strings.TrimSpace(item.Label)
+		model := strings.TrimSpace(item.Model)
+		reasoningMode := strings.TrimSpace(item.ReasoningMode)
+		verbosity := strings.TrimSpace(item.Verbosity)
+		baseURL := strings.TrimSpace(item.BaseURL)
+		if agentID == "" || provider == "" || label == "" || model == "" || baseURL == "" {
+			continue
+		}
+		if reasoningMode == "" {
+			reasoningMode = "standard"
+		}
+		if verbosity == "" {
+			verbosity = "medium"
+		}
+		if _, err := a.db.Exec(`INSERT INTO custom_agents (agent_id, provider, label, model, reasoning_mode, verbosity, base_url) VALUES (?, ?, ?, ?, ?, ?, ?)`, agentID, provider, label, model, reasoningMode, verbosity, baseURL); err != nil {
+			return err
+		}
+	}
+	trimmedAPIKey := strings.TrimSpace(apiKey)
+	if trimmedAPIKey != "" {
+		if err := a.upsertSecret("llm_api_key", trimmedAPIKey); err != nil {
+			return err
+		}
+	}
+	selected := ""
+	if selectedAgentID != nil {
+		selected = strings.TrimSpace(*selectedAgentID)
+	}
+	if selected == "" {
+		state, err := a.getSetupState()
+		if err != nil {
+			return err
+		}
+		if state.SelectedAgentID != nil {
+			selected = strings.TrimSpace(*state.SelectedAgentID)
+		}
+	}
+	if selected != "" {
+		agent, ok := getAgentDefinition(selected)
+		if !ok {
+			return fmt.Errorf("Unsupported agent: %s", selected)
+		}
+		if _, err := a.db.Exec(`UPDATE setup_state SET selected_agent_id = ?, llm_provider = ?, llm_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, agent.AgentID, agent.Provider, agent.Model); err != nil {
+			return err
+		}
 	}
 	_, _, err := a.refreshOnboardingState()
 	return err

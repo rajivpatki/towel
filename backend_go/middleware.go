@@ -23,6 +23,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc(a.config.APIPrefix+"/chat/conversations/", a.handleConversationMessages)
 	mux.HandleFunc(a.config.APIPrefix+"/history", a.handleHistory)
 	mux.HandleFunc(a.config.APIPrefix+"/preferences", a.handlePreferences)
+	mux.HandleFunc(a.config.APIPrefix+"/settings", a.handleSettings)
 	mux.HandleFunc(a.config.APIPrefix+"/profile/image", a.handleProfileImage)
 	return a.withCORS(mux)
 }

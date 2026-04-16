@@ -8,6 +8,7 @@ import LLMConfig from './pages/setup/LLMConfig'
 import Chat from './pages/Chat'
 import History from './pages/History'
 import Preferences from './pages/Preferences'
+import Settings from './pages/Settings'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
 
@@ -47,6 +48,7 @@ function AuthenticatedLayout({ status, onStatusChange }) {
           <Route path="/chat/:conversationId" element={<ChatWrapper />} />
           <Route path="/history" element={<History />} />
           <Route path="/personalise" element={<Preferences />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="/preferences" element={<Navigate to="/personalise" replace />} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Routes>

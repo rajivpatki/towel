@@ -16,6 +16,16 @@ func getAgentDefinition(agentID string) (AgentDefinition, bool) {
 			return agent, true
 		}
 	}
+	if appInstance != nil {
+		agents, err := appInstance.getCustomAgents()
+		if err == nil {
+			for _, agent := range agents {
+				if agent.AgentID == agentID {
+					return agent, true
+				}
+			}
+		}
+	}
 	return AgentDefinition{}, false
 }
 

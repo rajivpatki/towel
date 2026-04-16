@@ -38,10 +38,11 @@ type AgentDefinition struct {
 }
 
 type GmailToolDefinition struct {
-	Name         string   `json:"name"`
-	GmailActions []string `json:"gmail_actions"`
-	Description  string   `json:"description"`
-	SafetyModel  string   `json:"safety_model"`
+	Name         string         `json:"name"`
+	GmailActions []string       `json:"gmail_actions"`
+	Description  string         `json:"description"`
+	SafetyModel  string         `json:"safety_model"`
+	Parameters   map[string]any `json:"parameters,omitempty"`
 }
 
 type SetupState struct {
@@ -85,6 +86,39 @@ type GoogleAuthURLResponse struct {
 type LLMSetupIn struct {
 	AgentID string `json:"agent_id"`
 	APIKey  string `json:"api_key"`
+}
+
+type SettingsAgent struct {
+	AgentID       string `json:"agent_id"`
+	Provider      string `json:"provider"`
+	Label         string `json:"label"`
+	Model         string `json:"model"`
+	ReasoningMode string `json:"reasoning_mode"`
+	Verbosity     string `json:"verbosity"`
+	BaseURL       string `json:"base_url"`
+	IsCustom      bool   `json:"is_custom"`
+}
+
+type SettingsOut struct {
+	SelectedAgentID *string         `json:"selected_agent_id"`
+	HasAPIKey       bool            `json:"has_api_key"`
+	Agents          []SettingsAgent `json:"agents"`
+}
+
+type SettingsAgentInput struct {
+	AgentID       string `json:"agent_id"`
+	Provider      string `json:"provider"`
+	Label         string `json:"label"`
+	Model         string `json:"model"`
+	ReasoningMode string `json:"reasoning_mode"`
+	Verbosity     string `json:"verbosity"`
+	BaseURL       string `json:"base_url"`
+}
+
+type SettingsIn struct {
+	SelectedAgentID *string              `json:"selected_agent_id"`
+	APIKey          string               `json:"api_key"`
+	Agents          []SettingsAgentInput `json:"agents"`
 }
 
 type ChatMessageIn struct {
@@ -213,56 +247,5 @@ var agentDefinitions = []AgentDefinition{
 		ReasoningMode: "thinking",
 		Verbosity:     "low",
 		BaseURL:       "https://api.deepseek.com/v1",
-	},
-}
-
-var gmailToolDefinitions = []GmailToolDefinition{
-	{
-		Name:         "gmail.list_labels",
-		GmailActions: []string{"users.labels.list"},
-		Description:  "Loads the user's current Gmail labels so Towel can learn the existing taxonomy and avoid mixing with non-Towel labels.",
-		SafetyModel:  "read_only",
-	},
-	{
-		Name:         "gmail.create_towel_label",
-		GmailActions: []string{"users.labels.create"},
-		Description:  "Creates labels strictly under the Towel/ hierarchy, such as Towel/Spam, Towel/Delete, or learned organizational labels.",
-		SafetyModel:  "safe_write",
-	},
-	{
-		Name:         "gmail.list_messages",
-		GmailActions: []string{"users.messages.list"},
-		Description:  "Finds unread, high-volume, or suspicious message sets for analysis and triage.",
-		SafetyModel:  "read_only",
-	},
-	{
-		Name:         "gmail.read_message",
-		GmailActions: []string{"users.messages.get"},
-		Description:  "Reads individual email content and metadata so the agent can classify, summarize, and detect scams or spam patterns.",
-		SafetyModel:  "read_only",
-	},
-	{
-		Name:         "gmail.move_to_towel_spam",
-		GmailActions: []string{"users.messages.batchModify", "users.labels.create"},
-		Description:  "Applies or creates Towel/Spam and removes inbox visibility instead of using Gmail's destructive spam action.",
-		SafetyModel:  "pseudo_spam",
-	},
-	{
-		Name:         "gmail.move_to_towel_delete",
-		GmailActions: []string{"users.messages.batchModify", "users.labels.create"},
-		Description:  "Applies or creates Towel/Delete and removes inbox visibility instead of deleting messages.",
-		SafetyModel:  "pseudo_delete",
-	},
-	{
-		Name:         "gmail.create_filter",
-		GmailActions: []string{"users.settings.filters.create", "users.labels.create"},
-		Description:  "Creates Gmail filters that route future emails into existing or new Towel/ labels based on learned rules and user preferences.",
-		SafetyModel:  "safe_write",
-	},
-	{
-		Name:         "gmail.sender_analytics",
-		GmailActions: []string{"users.messages.list", "users.messages.get"},
-		Description:  "Aggregates sender and domain volume statistics so the UI can recommend cleanup or automation actions.",
-		SafetyModel:  "read_only",
 	},
 }

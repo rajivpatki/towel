@@ -13,3 +13,5 @@ const (
 	maxToolCallIterations  = 20
 	streamSessionTTL       = 15 * time.Minute
 )
+
+var appInstance *App

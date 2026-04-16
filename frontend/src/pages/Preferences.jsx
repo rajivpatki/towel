@@ -162,7 +162,7 @@ function Preferences() {
       <div className="instruction-box" style={{ marginTop: '2rem' }}>
         <h3>How personalisation works</h3>
         <p>
-          Each saved item is appended to the system prompt under <strong>PERSONALISED USER INSTRUCTIONS</strong>
+          Each saved item is appended to the system prompt under <strong>PERSONALISED USER INSTRUCTIONS </strong>
           as a separate bullet point.
         </p>
         <p style={{ marginBottom: 0 }}>

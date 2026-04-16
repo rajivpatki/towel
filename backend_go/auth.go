@@ -113,12 +113,15 @@ func (a *App) completeGoogleOAuthCallback(code string, stateValue string) error 
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("Google token exchange failed: %s", strings.TrimSpace(string(body)))
 	}
-	var tokenPayload map[string]any
-	if err := json.Unmarshal(body, &tokenPayload); err != nil {
+	var tokenBundle TokenBundle
+	if err := json.Unmarshal(body, &tokenBundle); err != nil {
 		return err
 	}
-	accessToken, _ := tokenPayload["access_token"].(string)
-	tokenJSON, err := json.Marshal(tokenPayload)
+	if tokenBundle.ExpiresIn > 0 {
+		tokenBundle.ExpiresAtUnix = gmailTokenExpiryUnix(tokenBundle.ExpiresIn)
+	}
+	accessToken := tokenBundle.AccessToken
+	tokenJSON, err := json.Marshal(tokenBundle)
 	if err != nil {
 		return err
 	}
