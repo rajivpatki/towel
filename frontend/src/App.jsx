@@ -1,16 +1,25 @@
-import { useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
-import Sidebar from './components/Sidebar'
 import { ToastProvider } from './components/ToastProvider'
-import GoogleOAuth from './pages/setup/GoogleOAuth'
-import GmailConnect from './pages/setup/GmailConnect'
-import LLMConfig from './pages/setup/LLMConfig'
-import Chat from './pages/Chat'
-import History from './pages/History'
-import Preferences from './pages/Preferences'
-import Settings from './pages/Settings'
+
+const Sidebar = lazy(() => import('./components/Sidebar'))
+const GoogleOAuth = lazy(() => import('./pages/setup/GoogleOAuth'))
+const GmailConnect = lazy(() => import('./pages/setup/GmailConnect'))
+const LLMConfig = lazy(() => import('./pages/setup/LLMConfig'))
+const Chat = lazy(() => import('./pages/Chat'))
+const History = lazy(() => import('./pages/History'))
+const Preferences = lazy(() => import('./pages/Preferences'))
+const Settings = lazy(() => import('./pages/Settings'))
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
+
+function LoadingFallback() {
+  return (
+    <div className="page-shell loading-shell">
+      <div className="loading-card">Loading Towel…</div>
+    </div>
+  )
+}
 
 async function parseResponse(response) {
   if (response.ok) {
@@ -80,29 +89,27 @@ function App() {
   }, [loadStatus])
 
   if (loading) {
-    return (
-      <div className="page-shell loading-shell">
-        <div className="loading-card">Loading Towel…</div>
-      </div>
-    )
+    return <LoadingFallback />
   }
 
   const isSetupComplete = status?.onboarding_completed
 
   return (
     <ToastProvider>
-      <BrowserRouter>
-        {isSetupComplete ? (
-          <AuthenticatedLayout status={status} onStatusChange={loadStatus} />
-        ) : (
-          <Routes>
-            <Route path="/setup/google" element={<GoogleOAuth onStatusChange={loadStatus} />} />
-            <Route path="/setup/gmail" element={<GmailConnect onStatusChange={loadStatus} />} />
-            <Route path="/setup/llm" element={<LLMConfig onStatusChange={loadStatus} />} />
-            <Route path="*" element={<Navigate to="/setup/google" replace />} />
-          </Routes>
-        )}
-      </BrowserRouter>
+      <Suspense fallback={<LoadingFallback />}>
+        <BrowserRouter>
+          {isSetupComplete ? (
+            <AuthenticatedLayout status={status} onStatusChange={loadStatus} />
+          ) : (
+            <Routes>
+              <Route path="/setup/google" element={<GoogleOAuth onStatusChange={loadStatus} />} />
+              <Route path="/setup/gmail" element={<GmailConnect onStatusChange={loadStatus} />} />
+              <Route path="/setup/llm" element={<LLMConfig onStatusChange={loadStatus} />} />
+              <Route path="*" element={<Navigate to="/setup/google" replace />} />
+            </Routes>
+          )}
+        </BrowserRouter>
+      </Suspense>
     </ToastProvider>
   )
 }

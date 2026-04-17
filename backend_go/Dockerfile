@@ -1,8 +1,10 @@
 FROM golang:1.24-alpine AS build
-RUN apk add --no-cache git ca-certificates && update-ca-certificates
+RUN apk add --no-cache ca-certificates && update-ca-certificates
 WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN go mod tidy && CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /towel-backend .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-w -s" -o /towel-backend .
 
 FROM scratch
 LABEL org.opencontainers.image.source="https://github.com/rajivpatki/YOUR_REPO"
