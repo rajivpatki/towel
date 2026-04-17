@@ -10,11 +10,15 @@ Your local instance keeps its state in a persistent Docker volume so you can res
 
 ## Prerequisites
 
-Before running Towel, install Docker on your machine using the scripts in `install/` or the equivalent manual steps below.
+If you want the easiest setup, run the installer script for your operating system. It installs Docker if needed, starts Towel with Compose, and opens `http://localhost:3000` in your browser.
+
+If you already have Docker installed, you can skip the installer and just download the Compose file for your OS, then run `docker compose up -d`.
+
+If you want to build Towel from source, clone this repository and use the `docker-compose.yml` file that is already in the repo.
 
 ### Windows
 
-Use `install/windows.ps1`.
+Use `install_windows.ps1`.
 
 What it does:
 
@@ -23,38 +27,55 @@ What it does:
 - **Enables WSL** and `VirtualMachinePlatform`
 - **Installs or updates WSL 2**
 - **Installs Docker Desktop** if it is not already present
-- **Prompts for restart** if Windows features were enabled during setup
+- **Shows a large warning** if Windows features were enabled and a restart may still be required
+- **Starts the Compose stack** for you
+- **Opens** `http://localhost:3000` automatically after startup
 
 Run it from PowerShell:
 
 ```powershell
-.\install\windows.ps1
+.\install_windows.ps1
 ```
 
-After setup, make sure Docker Desktop is running.
+If you already have Docker installed and just want the app, you can run the equivalent manual flow with PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/rajivpatki/towel/main/install.yml -OutFile docker-compose.yml; docker compose up -d
+```
+
+This is the same pattern the installer uses, except it also tries to launch your browser automatically.
 
 ### Linux
 
-Use `install/linux.sh`.
+Use `install_linux.sh`.
 
 What it does:
 
 - **Installs Docker Engine** and related Docker CLI plugins
 - **Enables and starts** the Docker service
 - **Adds your sudo user** to the `docker` group when possible
+- **Starts the Compose stack**
+- **Opens** `http://localhost:3000` automatically
 
 Run it with:
 
 ```bash
-chmod +x ./install/linux.sh
-./install/linux.sh
+chmod +x ./install_linux.sh
+./install_linux.sh
 ```
 
 If you were added to the `docker` group, log out and log back in before using Docker without `sudo`.
 
+If you already have Docker installed, download the Compose file and run it directly:
+
+```bash
+curl -L https://raw.githubusercontent.com/rajivpatki/towel/main/install.yml -o docker-compose.yml
+docker compose up -d
+```
+
 ### macOS
 
-Use `install/mac.sh`.
+Use `install_mac.sh`.
 
 What it does:
 
@@ -62,23 +83,30 @@ What it does:
 - **Installs OrbStack** when available
 - **Falls back to Colima + Docker CLI** if OrbStack installation fails
 - **Starts the Docker runtime** after installation
+- **Starts the Compose stack**
+- **Opens** `http://localhost:3000` automatically
 
 Run it with:
 
 ```bash
-chmod +x ./install/mac.sh
-./install/mac.sh
+chmod +x ./install_mac.sh
+./install_mac.sh
+```
+
+If you already have Docker installed, download the Compose file and run it directly:
+
+```bash
+curl -L https://raw.githubusercontent.com/rajivpatki/towel/main/install.yml -o docker-compose.yml
+docker compose up -d
 ```
 
 ## Run Towel with Docker Compose
 
-The easiest way to run the application is with Docker Compose:
+The easiest way to run the application from a cloned repo is with the Compose file that ships in this repository:
 
 ```bash
 docker compose up --build
 ```
-
-This starts:
 
 - **Backend** on port `8000`
 - **Frontend** on port `3000`
@@ -96,7 +124,6 @@ If you want to build and run manually instead of Compose:
 
 ```bash
 docker build -t towel .
-<<<<<<< HEAD
 docker run -p 3000:3000 -p 8000:8000 -v towel_data:/data towel
 ```
 
@@ -164,7 +191,7 @@ Important details:
 
 ## Developer usage
 
-To build and run locally with Compose:
+To build and run locally from a cloned repository:
 
 ```bash
 docker compose up --build
@@ -188,7 +215,7 @@ docker compose up --build
   Start Docker Desktop, OrbStack, or Colima before launching the app.
 
 - **Windows install completed but Docker still does not work**
-  Restart your machine if the install script enabled WSL or Virtual Machine Platform.
+  You may need to restart your machine if the install script enabled WSL or Virtual Machine Platform.
 
 - **Linux Docker permission denied**
   Log out and back in after being added to the `docker` group, or run Docker commands with `sudo`.
@@ -198,18 +225,3 @@ docker compose up --build
 
 - **Setup does not finish**
   Confirm that Gmail is connected and that you entered a valid API key for one of the supported AI agents.
-=======
-docker run -P 3000:3000 -p 8000:8000 -v insert_email_id_here:/data towel
-```
-
-
-Build Win exe:
-
-```
-npm run build:backend:win
-npm --prefix frontend run build
-npx electron-builder --win --dir
-```
-
-File at `D:\Projects\Jodaro\towel\dist\win-unpacked\Towel.exe`
->>>>>>> main

@@ -1,5 +1,9 @@
 $ErrorActionPreference = "SilentlyContinue"
 $needsReboot = $false
+$composeFile = Join-Path $PSScriptRoot "install.yml"
+if (-not (Test-Path $composeFile)) {
+    $composeFile = Join-Path $PSScriptRoot "docker-compose.yml"
+}
 
 # Self-elevate to Administrator if not already
 if (-not ([Security.Principal.WindowsPrincipal] `
@@ -43,17 +47,54 @@ if (-not (Test-Path "$Env:ProgramFiles\Docker\Docker\Docker Desktop.exe")) {
     choco install docker-desktop -y --no-progress
 }
 
-# Ask before rebooting, only if this script changed WSL-related Windows features
 if ($needsReboot) {
     Write-Host ""
-    Write-Host "A restart is required to complete WSL/Docker setup." -ForegroundColor Yellow
-    $choice = Read-Host "Do you want to reboot now? (Y/N)"
-
-    if ($choice -match '^[Yy]$') {
-        shutdown.exe /r /t 5 /c "Restarting to complete WSL/Docker setup"
-    } else {
-        Write-Host "Please restart later to complete installation." -ForegroundColor Cyan
-    }
-} else {
-    Write-Host "Setup complete. No reboot required." -ForegroundColor Green
+    Write-Host "============================================================" -ForegroundColor Yellow
+    Write-Host "WARNING: You MAY need to restart your PC for Docker to work." -ForegroundColor Yellow
+    Write-Host "============================================================" -ForegroundColor Yellow
+    Write-Host ""
 }
+
+$dockerDesktop = "$Env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
+if (Test-Path $dockerDesktop) {
+    Start-Process $dockerDesktop | Out-Null
+}
+
+Write-Host "Waiting for Docker to become available..."
+$dockerReady = $false
+for ($i = 0; $i -lt 60; $i++) {
+    & docker info *> $null
+    if ($LASTEXITCODE -eq 0) {
+        $dockerReady = $true
+        break
+    }
+
+    Start-Sleep -Seconds 5
+}
+
+if (-not $dockerReady) {
+    Write-Host "Docker is not ready yet. Start Docker Desktop, then run the Compose command again." -ForegroundColor Yellow
+    exit 1
+}
+
+Write-Host "Starting Towel..."
+& docker compose -f $composeFile up -d
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "Docker Compose failed to start the app." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "Waiting for http://localhost:3000 ..."
+for ($i = 0; $i -lt 60; $i++) {
+    try {
+        $response = Invoke-WebRequest -Uri "http://localhost:3000" -UseBasicParsing -TimeoutSec 2
+        if ($response.StatusCode -ge 200) {
+            break
+        }
+    } catch {
+    }
+
+    Start-Sleep -Seconds 2
+}
+
+Start-Process "http://localhost:3000"
