@@ -330,6 +330,12 @@ class StreamManager {
       if (resolvedConversationId !== conversationId) {
         this.connections.delete(conversationId)
         this.connections.set(resolvedConversationId, connection)
+        // Move listeners to the new conversation ID so they continue receiving updates
+        const oldListeners = this.listeners.get(conversationId)
+        if (oldListeners) {
+          this.listeners.set(resolvedConversationId, oldListeners)
+          this.listeners.delete(conversationId)
+        }
         // Notify about new conversation ID
         if (callbacks.onConversationId) {
           callbacks.onConversationId(resolvedConversationId)
