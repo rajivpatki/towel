@@ -236,10 +236,15 @@ func (a *App) handleChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	go func() {
-		emit := func(token string) {
-			_ = a.emitStreamToken(conversationID, token)
+		a.waitForStreamSubscriber(ctx, conversationID, 2*time.Second)
+		emitProgress := func(content string, actions []string) {
+			_ = a.emitStreamProgress(conversationID, ChatMessageOut{
+				ConversationID: conversationID,
+				Response:       content,
+				Actions:        actions,
+			})
 		}
-		response, processErr := a.processChatMessage(ctx, conversationID, payload.Message, emit)
+		response, processErr := a.processChatMessage(ctx, conversationID, payload.Message, emitProgress)
 		if processErr != nil {
 			if ctx.Err() == context.Canceled || processErr == context.Canceled {
 				return

@@ -38,6 +38,32 @@ func (a *App) startStreamSession(sessionID string, cancel context.CancelFunc) er
 	return nil
 }
 
+func (a *App) waitForStreamSubscriber(ctx context.Context, sessionID string, timeout time.Duration) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		a.streamMu.Lock()
+		session, ok := a.streamSessions[sessionID]
+		hasSubscriber := ok && len(session.Subscribers) > 0
+		completed := ok && session.Completed
+		a.streamMu.Unlock()
+		if hasSubscriber || completed {
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 func (a *App) stopStreamSession(sessionID string) bool {
 	a.streamMu.Lock()
 	session, ok := a.streamSessions[sessionID]
@@ -157,6 +183,10 @@ func (a *App) publishStreamEvent(sessionID string, eventName string, payload any
 	return nil
 }
 
+func (a *App) emitStreamProgress(sessionID string, payload ChatMessageOut) error {
+	return a.publishStreamEvent(sessionID, "progress", payload)
+}
+
 func (a *App) emitStreamToken(sessionID string, token string) error {
 	if token == "" {
 		return nil
@@ -206,6 +236,13 @@ func (a *App) getStreamSessionState(sessionID string) (map[string]any, bool) {
 	for _, event := range session.Events {
 		lastEventID = event.ID
 		switch event.Event {
+		case "progress":
+			var payload ChatMessageOut
+			if err := json.Unmarshal(event.Data, &payload); err == nil {
+				content.Reset()
+				content.WriteString(payload.Response)
+				actions = payload.Actions
+			}
 		case "token":
 			var payload map[string]string
 			if err := json.Unmarshal(event.Data, &payload); err == nil {

@@ -92,6 +92,7 @@ function Chat({ urlConversationId = '', status }) {
   }, [])
 
   // Load conversation history and check for active streams
+
   useEffect(() => {
     if (!conversationId) {
       setMessages([])
@@ -99,36 +100,143 @@ function Chat({ urlConversationId = '', status }) {
     }
 
     let active = true
-    let streamAccumulatedContent = ''
     let isStreamActive = false
+    let hasLocalActiveStream = false
+    let preloadedStreamState = null
+    let shouldReconnect = false
+    let pendingUserMessage = ''
+    let streamProgressContent = ''
+    let streamProgressActions = []
 
     async function loadConversation() {
       try {
-        // Step 1: Check if there's an active stream FIRST (before loading DB)
-        // This is crucial so we can display accumulated content immediately
+        // Step 1: Prefer the in-memory active stream state to avoid redundant backend checks.
         const streamState = streamManager.getStreamState(conversationId)
         if (streamState && streamState.isActive) {
           isStreamActive = true
-          streamAccumulatedContent = streamState.currentContent || ''
+          hasLocalActiveStream = true
+          pendingUserMessage = streamState.pendingUserMessage || ''
+          streamProgressContent = streamState.currentContent || ''
+          streamProgressActions = streamState.currentActions || []
         } else {
-          // Try to get stream state from backend
-          try {
-            const stateResponse = await fetch(`${apiBaseUrl}/api/chat/stream/state?session_id=${encodeURIComponent(conversationId)}`)
-            if (stateResponse.ok) {
-              const state = await stateResponse.json()
-              if (!state.completed && !state.has_error) {
-                isStreamActive = true
-                streamAccumulatedContent = state.content || ''
-              }
-            }
-          } catch {
-            // No active stream, proceed normally
+          // Only hit the backend if we do not already have a live connection locally.
+          const backendState = await streamManager.fetchStreamState(conversationId)
+          preloadedStreamState = backendState
+          if (backendState && !backendState.completed && !backendState.has_error) {
+            isStreamActive = true
+            shouldReconnect = true
+            streamProgressContent = backendState.content || ''
+            streamProgressActions = backendState.actions || []
           }
         }
 
         // Step 2: Load conversation history from DB
         const response = await fetch(`${apiBaseUrl}/api/chat/conversations/${encodeURIComponent(conversationId)}`)
         if (response.status === 404) {
+          if (isStreamActive) {
+            if (!active) return
+            setBusy(true)
+            setMessages((prev) => {
+              if (prev.length > 0) {
+                return prev
+              }
+
+              const nextMessages = []
+              if (pendingUserMessage) {
+                nextMessages.push({
+                  id: newMessageId('user'),
+                  role: 'user',
+                  content: pendingUserMessage,
+                  actions: [],
+                  streaming: false
+                })
+              }
+              nextMessages.push({
+                id: newMessageId('assistant'),
+                role: 'assistant',
+                content: streamProgressContent,
+                actions: streamProgressActions,
+                streaming: true
+              })
+              return nextMessages
+            })
+
+            if (hasLocalActiveStream) {
+              const unsubscribe = subscribeToStream(conversationId)
+              if (unsubscribe) {
+                streamUnsubscribeRef.current = unsubscribe
+              }
+            } else if (shouldReconnect) {
+              const unsubscribe = await streamManager.reconnectToStream(conversationId, {
+                onProgress: (progress) => {
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.streaming
+                        ? {
+                            ...msg,
+                            content: progress.content || msg.content,
+                            actions: progress.actions || msg.actions
+                          }
+                        : msg
+                    )
+                  )
+                },
+                onContent: (content) => {
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.streaming ? { ...msg, content } : msg
+                    )
+                  )
+                },
+                onComplete: (completedResponse) => {
+                  setBusy(false)
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.streaming
+                        ? {
+                            id: `stream-${Date.now()}`,
+                            role: 'assistant',
+                            content: completedResponse.content,
+                            actions: completedResponse.actions || [],
+                            streaming: false
+                          }
+                        : msg
+                    )
+                  )
+                  window.dispatchEvent(new Event(conversationRefreshEvent))
+                },
+                onError: (error) => {
+                  setBusy(false)
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.streaming
+                        ? { ...msg, content: msg.content || `Error: ${error}`, error: true, streaming: false }
+                        : msg
+                    )
+                  )
+                },
+                onStopped: () => {
+                  setBusy(false)
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.streaming
+                        ? { ...msg, streaming: false }
+                        : msg
+                    )
+                  )
+                },
+                onInactive: () => {
+                  setBusy(false)
+                }
+              }, preloadedStreamState)
+
+              if (unsubscribe) {
+                streamUnsubscribeRef.current = unsubscribe
+              }
+            }
+            return
+          }
+
           if (!active) return
           navigate('/chat', { replace: true })
           notifyNewChat()
@@ -139,8 +247,6 @@ function Chat({ urlConversationId = '', status }) {
         if (!active || !Array.isArray(data.messages)) return
 
         // Step 3: Process DB messages
-        // If there's an active stream, the last assistant message in DB is stale (incomplete)
-        // We should exclude it since we'll show the streaming version instead
         let dbMessages = data.messages
           .filter((item) => item.role === 'user' || item.role === 'assistant')
           .map((item) => ({
@@ -151,13 +257,16 @@ function Chat({ urlConversationId = '', status }) {
             streaming: false
           }))
 
-        // If streaming is active and last message is from assistant, remove it
-        // (it's incomplete and the stream has the up-to-date accumulated content)
-        if (isStreamActive && dbMessages.length > 0) {
-          const lastMessage = dbMessages[dbMessages.length - 1]
-          if (lastMessage.role === 'assistant') {
-            dbMessages = dbMessages.slice(0, -1)
-          }
+        if (isStreamActive && dbMessages.length === 0 && pendingUserMessage) {
+          dbMessages = [
+            {
+              id: newMessageId('user'),
+              role: 'user',
+              content: pendingUserMessage,
+              actions: [],
+              streaming: false
+            }
+          ]
         }
 
         // Step 4: Set messages with streaming message if active
@@ -168,8 +277,8 @@ function Chat({ urlConversationId = '', status }) {
             {
               id: newMessageId('assistant'),
               role: 'assistant',
-              content: streamAccumulatedContent, // Show accumulated content immediately
-              actions: [],
+              content: streamProgressContent,
+              actions: streamProgressActions,
               streaming: true
             }
           ])
@@ -179,59 +288,78 @@ function Chat({ urlConversationId = '', status }) {
 
         // Step 5: Subscribe to stream updates if active
         if (isStreamActive) {
-          // Reconnect to stream for live updates
-          const unsubscribe = await streamManager.reconnectToStream(conversationId, {
-            onContent: (content) => {
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.streaming ? { ...msg, content } : msg
-                )
-              )
-            },
-            onComplete: (response) => {
-              setBusy(false)
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.streaming
-                    ? {
-                        id: `stream-${Date.now()}`,
-                        role: 'assistant',
-                        content: response.content,
-                        actions: response.actions || [],
-                        streaming: false
-                      }
-                    : msg
-                )
-              )
-              window.dispatchEvent(new Event(conversationRefreshEvent))
-            },
-            onError: (error) => {
-              setBusy(false)
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.streaming
-                    ? { ...msg, content: msg.content || `Error: ${error}`, error: true, streaming: false }
-                    : msg
-                )
-              )
-            },
-            onStopped: () => {
-              setBusy(false)
-              setMessages((prev) =>
-                prev.map((msg) =>
-                  msg.streaming
-                    ? { ...msg, streaming: false }
-                    : msg
-                )
-              )
-            },
-            onInactive: () => {
-              setBusy(false)
+          if (hasLocalActiveStream) {
+            const unsubscribe = subscribeToStream(conversationId)
+            if (unsubscribe) {
+              streamUnsubscribeRef.current = unsubscribe
             }
-          })
+          } else if (shouldReconnect) {
+            const unsubscribe = await streamManager.reconnectToStream(conversationId, {
+              onProgress: (progress) => {
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.streaming
+                      ? {
+                          ...msg,
+                          content: progress.content || msg.content,
+                          actions: progress.actions || msg.actions
+                        }
+                      : msg
+                  )
+                )
+              },
+              onContent: (content) => {
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.streaming ? { ...msg, content } : msg
+                  )
+                )
+              },
+              onComplete: (response) => {
+                setBusy(false)
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.streaming
+                      ? {
+                          id: `stream-${Date.now()}`,
+                          role: 'assistant',
+                          content: response.content,
+                          actions: response.actions || [],
+                          streaming: false
+                        }
+                      : msg
+                  )
+                )
+                window.dispatchEvent(new Event(conversationRefreshEvent))
+              },
+              onError: (error) => {
+                setBusy(false)
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.streaming
+                      ? { ...msg, content: msg.content || `Error: ${error}`, error: true, streaming: false }
+                      : msg
+                  )
+                )
+              },
+              onStopped: () => {
+                setBusy(false)
+                setMessages((prev) =>
+                  prev.map((msg) =>
+                    msg.streaming
+                      ? { ...msg, streaming: false }
+                      : msg
+                  )
+                )
+              },
+              onInactive: () => {
+                setBusy(false)
+              }
+            }, preloadedStreamState)
 
-          if (unsubscribe) {
-            streamUnsubscribeRef.current = unsubscribe
+            if (unsubscribe) {
+              streamUnsubscribeRef.current = unsubscribe
+            }
           }
         }
       } catch (err) {
@@ -257,6 +385,19 @@ function Chat({ urlConversationId = '', status }) {
     }
 
     streamUnsubscribeRef.current = streamManager.subscribe(convId, {
+      onProgress: (progress) => {
+        setMessages((prev) =>
+          prev.map((msg) =>
+            msg.streaming
+              ? {
+                  ...msg,
+                  content: progress.content || msg.content,
+                  actions: progress.actions || msg.actions
+                }
+              : msg
+          )
+        )
+      },
       onContent: (content) => {
         setMessages((prev) =>
           prev.map((msg) =>
@@ -350,10 +491,73 @@ function Chat({ urlConversationId = '', status }) {
 
     try {
       // Use streamManager to handle the SSE connection
-      const resolvedConversationId = await streamManager.startStream(
+      await streamManager.startStream(
         conversationId,
         userMessage,
         {
+          onProgress: (progress) => {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessageId || msg.streaming
+                  ? {
+                      ...msg,
+                      content: progress.content || msg.content,
+                      actions: progress.actions || msg.actions
+                    }
+                  : msg
+              )
+            )
+          },
+          onContent: (content) => {
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessageId || msg.streaming ? { ...msg, content } : msg
+              )
+            )
+          },
+          onComplete: (response) => {
+            setBusy(false)
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessageId || msg.streaming
+                  ? {
+                      id: response.conversation_id ? `stream-${Date.now()}` : assistantMessageId,
+                      role: 'assistant',
+                      content: response.content,
+                      actions: response.actions || [],
+                      streaming: false
+                    }
+                  : msg
+              )
+            )
+            if (response.conversation_id && response.conversation_id !== conversationId) {
+              navigate(`/chat/${response.conversation_id}`, { replace: true })
+            }
+            window.dispatchEvent(new Event(conversationRefreshEvent))
+          },
+          onError: (error) => {
+            setBusy(false)
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessageId || msg.streaming
+                  ? { ...msg, content: msg.content || `Error: ${error}`, error: true, streaming: false }
+                  : msg
+              )
+            )
+          },
+          onStopped: () => {
+            setBusy(false)
+            setMessages((prev) =>
+              prev.map((msg) =>
+                msg.id === assistantMessageId || msg.streaming
+                  ? { ...msg, streaming: false }
+                  : msg
+              )
+            )
+          },
+          onInactive: () => {
+            setBusy(false)
+          },
           onConversationId: (newId) => {
             // Navigate to the new/existing conversation URL
             if (newId !== conversationId) {
@@ -362,9 +566,6 @@ function Chat({ urlConversationId = '', status }) {
           }
         }
       )
-
-      // Subscribe to stream updates for this conversation
-      subscribeToStream(resolvedConversationId)
 
     } catch (err) {
       setBusy(false)

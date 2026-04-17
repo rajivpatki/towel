@@ -171,9 +171,10 @@ func interpretGeminiSetupFailure(statusCode int, body []byte) GeminiSetupOut {
 	}
 }
 
-func (a *App) callGeminiLLM(ctx context.Context, agent AgentDefinition, accessToken string, systemPrompt string, history []ConversationMessage, emitToken func(string)) (string, []string, error) {
+func (a *App) callGeminiLLM(ctx context.Context, agent AgentDefinition, accessToken string, systemPrompt string, history []ConversationMessage, emitProgress func(string, []string)) (string, []string, error) {
 	contents := buildGeminiConversation(history)
 	actions := make([]string, 0)
+	latestContent := ""
 	for iteration := 0; iteration < maxToolCallIterations; iteration++ {
 		if err := ctx.Err(); err != nil {
 			return "", actions, err
@@ -183,17 +184,21 @@ func (a *App) callGeminiLLM(ctx context.Context, agent AgentDefinition, accessTo
 			return "", actions, err
 		}
 		content := stringifyLLMContent(message.Content)
+		if strings.TrimSpace(content) != "" {
+			latestContent = strings.TrimSpace(content)
+			emitProgressUpdate(emitProgress, latestContent, actions)
+		}
 		if len(message.ToolCalls) == 0 {
 			if strings.TrimSpace(content) == "" {
 				return "", actions, errors.New("upstream Gemini response returned empty content")
 			}
-			emitTokenizedText(content, emitToken)
 			return content, actions, nil
 		}
 		contents = append(contents, candidate.Content)
 		for toolIndex, toolCall := range message.ToolCalls {
 			result, action, actionType := a.executeToolCall(toolCall)
 			actions = append(actions, action)
+			emitProgressUpdate(emitProgress, latestContent, actions)
 			if err := a.logActionHistory(actionType, action, result); err != nil {
 				return "", actions, fmt.Errorf("failed to record tool call: %w", err)
 			}

@@ -53,7 +53,7 @@ func buildChatSystemPrompt(preferences []PreferenceItem) string {
 	return prompt + "\n\nPERSONALISED USER INSTRUCTIONS:\n" + strings.Join(lines, "\n")
 }
 
-func (a *App) processChatMessage(ctx context.Context, conversationID string, userMessage string, emitToken func(string)) (ChatMessageOut, error) {
+func (a *App) processChatMessage(ctx context.Context, conversationID string, userMessage string, emitProgress func(string, []string)) (ChatMessageOut, error) {
 	if err := ctx.Err(); err != nil {
 		return ChatMessageOut{}, err
 	}
@@ -93,7 +93,7 @@ func (a *App) processChatMessage(ctx context.Context, conversationID string, use
 	assistantMessage := ""
 	actions := make([]string, 0)
 	if agentUsesGoogleOAuth(agent) {
-		assistantMessage, actions, err = a.callGeminiLLM(ctx, agent, credential, systemPrompt, history, emitToken)
+		assistantMessage, actions, err = a.callGeminiLLM(ctx, agent, credential, systemPrompt, history, emitProgress)
 	} else {
 		messages := make([]map[string]any, 0, len(history)+1)
 		messages = append(messages, map[string]any{"role": "system", "content": systemPrompt})
@@ -104,7 +104,7 @@ func (a *App) processChatMessage(ctx context.Context, conversationID string, use
 			}
 			messages = append(messages, map[string]any{"role": role, "content": item.Content})
 		}
-		assistantMessage, actions, err = a.callLLM(ctx, agent, credential, messages, emitToken)
+		assistantMessage, actions, err = a.callLLM(ctx, agent, credential, messages, emitProgress)
 	}
 	if err != nil {
 		return ChatMessageOut{}, fmt.Errorf("Chat processing failed: %v", err)
@@ -125,9 +125,18 @@ func (a *App) processChatMessage(ctx context.Context, conversationID string, use
 	}, nil
 }
 
-func (a *App) callLLM(ctx context.Context, agent AgentDefinition, apiKey string, messages []map[string]any, emitToken func(string)) (string, []string, error) {
+func emitProgressUpdate(emitProgress func(string, []string), content string, actions []string) {
+	if emitProgress == nil {
+		return
+	}
+	actionsCopy := append([]string(nil), actions...)
+	emitProgress(strings.TrimSpace(content), actionsCopy)
+}
+
+func (a *App) callLLM(ctx context.Context, agent AgentDefinition, apiKey string, messages []map[string]any, emitProgress func(string, []string)) (string, []string, error) {
 	tools := buildLLMToolsPayload()
 	actions := make([]string, 0)
+	latestContent := ""
 
 	for iteration := 0; iteration < maxToolCallIterations; iteration++ {
 		if err := ctx.Err(); err != nil {
@@ -139,11 +148,14 @@ func (a *App) callLLM(ctx context.Context, agent AgentDefinition, apiKey string,
 		}
 
 		content := stringifyLLMContent(message.Content)
+		if strings.TrimSpace(content) != "" {
+			latestContent = strings.TrimSpace(content)
+			emitProgressUpdate(emitProgress, latestContent, actions)
+		}
 		if len(message.ToolCalls) == 0 {
 			if strings.TrimSpace(content) == "" {
 				return "", actions, errors.New("upstream LLM returned empty content")
 			}
-			emitTokenizedText(content, emitToken)
 			return content, actions, nil
 		}
 
@@ -160,6 +172,7 @@ func (a *App) callLLM(ctx context.Context, agent AgentDefinition, apiKey string,
 		for toolIndex, toolCall := range message.ToolCalls {
 			result, action, actionType := a.executeToolCall(toolCall)
 			actions = append(actions, action)
+			emitProgressUpdate(emitProgress, latestContent, actions)
 			if err := a.logActionHistory(actionType, action, result); err != nil {
 				return "", actions, fmt.Errorf("failed to record tool call: %w", err)
 			}
@@ -230,6 +243,7 @@ func (a *App) callLLMOnce(ctx context.Context, agent AgentDefinition, apiKey str
 		"max_completion_tokens": 1000,
 		"tools":                 tools,
 		"tool_choice":           "auto",
+		"stream":                false,
 	}
 	body, err := json.Marshal(requestPayload)
 	if err != nil {
@@ -247,13 +261,18 @@ func (a *App) callLLMOnce(ctx context.Context, agent AgentDefinition, apiKey str
 		return llmResponseMessage{}, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		responseBody, _ := io.ReadAll(resp.Body)
+		return llmResponseMessage{}, fmt.Errorf("upstream LLM request failed: %s", strings.TrimSpace(string(responseBody)))
+	}
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return llmResponseMessage{}, err
 	}
-	if resp.StatusCode >= 400 {
-		return llmResponseMessage{}, fmt.Errorf("upstream LLM request failed: %s", strings.TrimSpace(string(responseBody)))
-	}
+	return parseOpenAIChatCompletionResponse(responseBody)
+}
+
+func parseOpenAIChatCompletionResponse(responseBody []byte) (llmResponseMessage, error) {
 	var payload struct {
 		Choices []struct {
 			Message llmResponseMessage `json:"message"`
@@ -265,7 +284,14 @@ func (a *App) callLLMOnce(ctx context.Context, agent AgentDefinition, apiKey str
 	if len(payload.Choices) == 0 {
 		return llmResponseMessage{}, errors.New("upstream LLM response did not include any choices")
 	}
-	return payload.Choices[0].Message, nil
+	message := payload.Choices[0].Message
+	if strings.TrimSpace(message.Role) == "" {
+		message.Role = "assistant"
+	}
+	if stringifyLLMContent(message.Content) == "" && len(message.ToolCalls) == 0 {
+		return llmResponseMessage{}, errors.New("upstream LLM response did not include any content")
+	}
+	return message, nil
 }
 
 func (a *App) executeToolCall(call llmToolCall) (string, string, string) {
@@ -337,38 +363,6 @@ func getToolDefinitionByFunctionName(functionName string) (GmailToolDefinition, 
 		}
 	}
 	return GmailToolDefinition{}, false
-}
-
-func emitTokenizedText(value string, emitToken func(string)) {
-	if emitToken == nil || value == "" {
-		return
-	}
-	for _, token := range splitTextTokens(value) {
-		emitToken(token)
-	}
-}
-
-func splitTextTokens(value string) []string {
-	tokens := make([]string, 0)
-	var builder strings.Builder
-	runeCount := 0
-	flush := func() {
-		if builder.Len() == 0 {
-			return
-		}
-		tokens = append(tokens, builder.String())
-		builder.Reset()
-		runeCount = 0
-	}
-	for _, r := range value {
-		builder.WriteRune(r)
-		runeCount++
-		if r == ' ' || r == '\n' || runeCount >= 24 {
-			flush()
-		}
-	}
-	flush()
-	return tokens
 }
 
 func stringifyLLMContent(content any) string {
