@@ -11,7 +11,7 @@ const History = lazy(() => import('./pages/History'))
 const Preferences = lazy(() => import('./pages/Preferences'))
 const Settings = lazy(() => import('./pages/Settings'))
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://localhost:8000`
 
 function LoadingFallback() {
   return (
@@ -21,12 +21,26 @@ function LoadingFallback() {
   )
 }
 
+function RequireSetupComplete({ status, onStatusChange }) {
+  if (!status?.onboarding_completed) {
+    return <Navigate to="/setup/google" replace />
+  }
+
+  return <AuthenticatedLayout status={status} onStatusChange={onStatusChange} />
+}
+
 async function parseResponse(response) {
   if (response.ok) {
     if (response.status === 204) {
       return null
     }
     return response.json()
+  }
+
+  // Handle unauthorized - redirect to login/setup
+  if (response.status === 401) {
+    window.location.href = '/setup/google'
+    throw new Error('Session expired. Please sign in again.')
   }
 
   let detail = 'Request failed'
@@ -98,16 +112,12 @@ function App() {
     <ToastProvider>
       <Suspense fallback={<LoadingFallback />}>
         <BrowserRouter>
-          {isSetupComplete ? (
-            <AuthenticatedLayout status={status} onStatusChange={loadStatus} />
-          ) : (
-            <Routes>
-              <Route path="/setup/google" element={<GoogleOAuth onStatusChange={loadStatus} />} />
-              <Route path="/setup/gmail" element={<GmailConnect onStatusChange={loadStatus} />} />
-              <Route path="/setup/llm" element={<LLMConfig onStatusChange={loadStatus} />} />
-              <Route path="*" element={<Navigate to="/setup/google" replace />} />
-            </Routes>
-          )}
+          <Routes>
+            <Route path="/setup/google" element={<GoogleOAuth onStatusChange={loadStatus} />} />
+            <Route path="/setup/gmail" element={<GmailConnect onStatusChange={loadStatus} />} />
+            <Route path="/setup/llm" element={<LLMConfig onStatusChange={loadStatus} />} />
+            <Route path="/*" element={<RequireSetupComplete status={status} onStatusChange={loadStatus} />} />
+          </Routes>
         </BrowserRouter>
       </Suspense>
     </ToastProvider>

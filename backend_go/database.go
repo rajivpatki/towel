@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fernet/fernet-go"
 )
@@ -78,6 +79,15 @@ func (a *App) initDB() error {
 		);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_records_key ON secret_records(key);`,
 		`CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_id_id ON conversation_messages(conversation_id, id);`,
+		`CREATE TABLE IF NOT EXISTS user_sessions (
+			id TEXT PRIMARY KEY,
+			email TEXT NOT NULL,
+			name TEXT,
+			picture TEXT,
+			expires_at TEXT NOT NULL,
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at ON user_sessions(expires_at);`,
 		`INSERT OR IGNORE INTO setup_state (id) VALUES (1);`,
 	}
 	for _, statement := range statements {
@@ -706,4 +716,56 @@ func truncateString(value string, limit int) string {
 		return value
 	}
 	return string(runes[:limit])
+}
+
+func (a *App) createSession(email string, name string, picture string) (string, error) {
+	sessionID, err := generateUUID()
+	if err != nil {
+		return "", err
+	}
+	expiresAt := time.Now().UTC().Add(7 * 24 * time.Hour)
+	_, err = a.db.Exec(
+		`INSERT INTO user_sessions (id, email, name, picture, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		sessionID, email, nullIfEmpty(name), nullIfEmpty(picture), expiresAt.Format(time.RFC3339),
+	)
+	if err != nil {
+		return "", err
+	}
+	return sessionID, nil
+}
+
+func (a *App) getValidSession(sessionID string) (*UserSession, error) {
+	if sessionID == "" {
+		return nil, nil
+	}
+	row := a.db.QueryRow(
+		`SELECT id, email, name, picture, expires_at FROM user_sessions WHERE id = ? AND expires_at > ?`,
+		sessionID, time.Now().UTC().Format(time.RFC3339),
+	)
+	var session UserSession
+	var name, picture sql.NullString
+	var expiresAt string
+	if err := row.Scan(&session.ID, &session.Email, &name, &picture, &expiresAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if name.Valid {
+		session.Name = name.String
+	}
+	if picture.Valid {
+		session.Picture = picture.String
+	}
+	return &session, nil
+}
+
+func (a *App) deleteSession(sessionID string) error {
+	_, err := a.db.Exec(`DELETE FROM user_sessions WHERE id = ?`, sessionID)
+	return err
+}
+
+func (a *App) cleanupExpiredSessions() error {
+	_, err := a.db.Exec(`DELETE FROM user_sessions WHERE expires_at <= ?`, time.Now().UTC().Format(time.RFC3339))
+	return err
 }

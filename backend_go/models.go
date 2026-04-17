@@ -47,6 +47,13 @@ type GmailToolDefinition struct {
 	Parameters   map[string]any `json:"parameters,omitempty"`
 }
 
+type UserSession struct {
+	ID      string
+	Email   string
+	Name    string
+	Picture string
+}
+
 type SetupState struct {
 	GoogleClientConfigured bool
 	GoogleAccountConnected bool

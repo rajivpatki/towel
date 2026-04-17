@@ -66,28 +66,28 @@ func (a *App) buildGoogleAuthURL() (string, error) {
 	return googleAuthEndpoint + "?" + query.Encode(), nil
 }
 
-func (a *App) completeGoogleOAuthCallback(code string, stateValue string) error {
+func (a *App) completeGoogleOAuthCallback(code string, stateValue string) (string, error) {
 	savedState, err := a.getSecret("google_oauth_state")
 	if err != nil {
-		return err
+		return "", err
 	}
 	codeVerifier, err := a.getSecret("google_oauth_code_verifier")
 	if err != nil {
-		return err
+		return "", err
 	}
 	clientID, err := a.getSecret("google_client_id")
 	if err != nil {
-		return err
+		return "", err
 	}
 	clientSecret, err := a.getSecret("google_client_secret")
 	if err != nil {
-		return err
+		return "", err
 	}
 	if savedState == "" || codeVerifier == "" || clientID == "" || clientSecret == "" {
-		return errors.New("OAuth setup is incomplete. Save Google client credentials first.")
+		return "", errors.New("OAuth setup is incomplete. Save Google client credentials first.")
 	}
 	if savedState != stateValue {
-		return errors.New("OAuth state validation failed.")
+		return "", errors.New("OAuth state validation failed.")
 	}
 	form := url.Values{}
 	form.Set("client_id", clientID)
@@ -98,25 +98,25 @@ func (a *App) completeGoogleOAuthCallback(code string, stateValue string) error 
 	form.Set("redirect_uri", a.buildRedirectURI())
 	req, err := http.NewRequest(http.MethodPost, "https://oauth2.googleapis.com/token", strings.NewReader(form.Encode()))
 	if err != nil {
-		return err
+		return "", err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := a.httpClient.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("Google token exchange failed: %s", strings.TrimSpace(string(body)))
+		return "", fmt.Errorf("Google token exchange failed: %s", strings.TrimSpace(string(body)))
 	}
 	var tokenBundle TokenBundle
 	if err := json.Unmarshal(body, &tokenBundle); err != nil {
-		return err
+		return "", err
 	}
 	if tokenBundle.ExpiresIn > 0 {
 		tokenBundle.ExpiresAtUnix = gmailTokenExpiryUnix(tokenBundle.ExpiresIn)
@@ -124,19 +124,27 @@ func (a *App) completeGoogleOAuthCallback(code string, stateValue string) error 
 	accessToken := tokenBundle.AccessToken
 	tokenJSON, err := json.Marshal(tokenBundle)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if err := a.upsertSecret("google_token_bundle", string(tokenJSON)); err != nil {
-		return err
+		return "", err
 	}
 	if _, err := a.db.Exec(`UPDATE setup_state SET google_account_connected = 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1`); err != nil {
-		return err
+		return "", err
 	}
+
+	// Fetch profile and create session synchronously
+	sessionID := ""
 	if strings.TrimSpace(accessToken) != "" {
-		go a.refreshGoogleProfile(accessToken)
+		profile, err := a.fetchGoogleUserProfile(accessToken)
+		if err == nil {
+			_ = a.saveGoogleProfile(profile.Email, profile.Name, profile.Picture)
+			sessionID, _ = a.createSession(profile.Email, profile.Name, profile.Picture)
+		}
 	}
+
 	_, _, err = a.refreshOnboardingState()
-	return err
+	return sessionID, err
 }
 
 func (a *App) refreshGoogleProfile(accessToken string) {

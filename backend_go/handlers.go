@@ -93,9 +93,22 @@ func (a *App) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "http://localhost:3000/setup/gmail?oauth=error&msg=OAuth+callback+is+missing+required+query+parameters", http.StatusSeeOther)
 		return
 	}
-	if err := a.completeGoogleOAuthCallback(code, state); err != nil {
+	sessionID, err := a.completeGoogleOAuthCallback(code, state)
+	if err != nil {
 		http.Redirect(w, r, "http://localhost:3000/setup/gmail?oauth=error&msg="+html.EscapeString(err.Error()), http.StatusSeeOther)
 		return
+	}
+	// Set session cookie for API authentication
+	if sessionID != "" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "session_id",
+			Value:    sessionID,
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   false,                // Set to true if using HTTPS
+			SameSite: http.SameSiteLaxMode, // Changed from NoneMode to LaxMode
+			MaxAge:   7 * 24 * 60 * 60,     // 7 days
+		})
 	}
 	http.Redirect(w, r, frontendSetupURL+"?oauth=success", http.StatusSeeOther)
 }

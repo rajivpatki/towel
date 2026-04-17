@@ -5,7 +5,7 @@ import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
 import streamManager from '../services/streamManager'
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://localhost:8000`
 const newChatEvent = 'towel:new-chat'
 const conversationRefreshEvent = 'towel:conversation-list-refresh'
 
@@ -15,6 +15,12 @@ async function parseResponse(response) {
       return null
     }
     return response.json()
+  }
+
+  // Handle unauthorized - redirect to login/setup
+  if (response.status === 401) {
+    window.location.href = '/setup/google'
+    throw new Error('Session expired. Please sign in again.')
   }
 
   let detail = 'Request failed'
@@ -141,7 +147,9 @@ function Chat({ urlConversationId = '', status }) {
         }
 
         // Step 2: Load conversation history from DB
-        const response = await fetch(`${apiBaseUrl}/api/chat/conversations/${encodeURIComponent(conversationId)}`)
+        const response = await fetch(`${apiBaseUrl}/api/chat/conversations/${encodeURIComponent(conversationId)}`, {
+          credentials: 'include'
+        })
         if (response.status === 404) {
           if (isStreamActive) {
             if (!active) return

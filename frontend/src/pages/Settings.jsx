@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useToast } from '../components/ToastProvider'
 import CustomSelect from '../components/CustomSelect'
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://localhost:8000`
 
 async function parseResponse(response) {
   if (response.ok) {
@@ -10,6 +10,12 @@ async function parseResponse(response) {
       return null
     }
     return response.json()
+  }
+
+  // Handle unauthorized - redirect to login/setup
+  if (response.status === 401) {
+    window.location.href = '/setup/google'
+    throw new Error('Session expired. Please sign in again.')
   }
 
   let detail = 'Request failed'
@@ -58,7 +64,9 @@ function Settings() {
 
   async function loadSettings() {
     try {
-      const response = await fetch(`${apiBaseUrl}/api/settings`)
+      const response = await fetch(`${apiBaseUrl}/api/settings`, {
+        credentials: 'include'
+      })
       const data = await parseResponse(response)
       setSelectedAgentId(data.selected_agent_id || data.agents?.[0]?.agent_id || '')
       setHasApiKey(Boolean(data.has_api_key))
@@ -109,6 +117,7 @@ function Settings() {
         headers: {
           'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify({
           selected_agent_id: selectedAgentId || null,
           api_key: apiKey,

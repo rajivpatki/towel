@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useToast } from '../components/ToastProvider'
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://localhost:8000`
 
 async function parseResponse(response) {
   if (response.ok) {
@@ -9,6 +9,12 @@ async function parseResponse(response) {
       return null
     }
     return response.json()
+  }
+
+  // Handle unauthorized - redirect to login/setup
+  if (response.status === 401) {
+    window.location.href = '/setup/google'
+    throw new Error('Session expired. Please sign in again.')
   }
 
   let detail = 'Request failed'
@@ -36,7 +42,9 @@ function History() {
 
   async function loadHistory() {
     try {
-      const response = await fetch(`${apiBaseUrl}/api/history`)
+      const response = await fetch(`${apiBaseUrl}/api/history`, {
+        credentials: 'include'
+      })
       const data = await parseResponse(response)
       setHistory(data.items || [])
     } catch (err) {

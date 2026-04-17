@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useToast } from '../../components/ToastProvider'
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://localhost:8000`
 
 async function parseResponse(response) {
   if (response.ok) {

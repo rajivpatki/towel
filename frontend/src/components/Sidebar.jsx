@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation, useNavigate, useMatch } from 'react-router-dom'
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://localhost:8000`
 const pageSize = 15
 const newChatEvent = 'towel:new-chat'
 const conversationRefreshEvent = 'towel:conversation-list-refresh'
@@ -12,6 +12,12 @@ async function parseResponse(response) {
       return null
     }
     return response.json()
+  }
+
+  // Handle unauthorized - redirect to login/setup
+  if (response.status === 401) {
+    window.location.href = '/setup/google'
+    throw new Error('Session expired. Please sign in again.')
   }
 
   let detail = 'Request failed'
@@ -107,7 +113,9 @@ function Sidebar({ status }) {
   async function loadConversations(nextPage = 1, replace = false) {
     setLoading(true)
     try {
-      const response = await fetch(`${apiBaseUrl}/api/chat/conversations?page=${nextPage}&page_size=${pageSize}`)
+      const response = await fetch(`${apiBaseUrl}/api/chat/conversations?page=${nextPage}&page_size=${pageSize}`, {
+        credentials: 'include'
+      })
       const data = await parseResponse(response)
       const items = Array.isArray(data?.items) ? data.items : []
       setConversations((previous) => replace ? items : [...previous, ...items])
@@ -157,7 +165,8 @@ function Sidebar({ status }) {
     setDeletingId(conversationId)
     try {
       const response = await fetch(`${apiBaseUrl}/api/chat/conversations/${encodeURIComponent(conversationId)}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        credentials: 'include'
       })
       await parseResponse(response)
       setConversations((previous) => previous.filter((item) => item.id !== conversationId))

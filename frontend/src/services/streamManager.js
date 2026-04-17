@@ -1,4 +1,4 @@
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://127.0.0.1:8000`
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://localhost:8000`
 
 class StreamManager {
   constructor() {
@@ -156,10 +156,15 @@ class StreamManager {
       const response = await fetch(streamUrl, {
         method: 'GET',
         headers: { Accept: 'text/event-stream' },
+        credentials: 'include',
         signal: connection.abortController.signal
       })
 
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/setup/google'
+          throw new Error('Session expired. Please sign in again.')
+        }
         const error = await response.json().catch(() => ({ detail: 'Failed to connect to stream' }))
         throw new Error(error.detail || 'Failed to connect to stream')
       }
@@ -273,8 +278,13 @@ class StreamManager {
 
   async fetchStreamState(conversationId) {
     try {
-      const response = await fetch(`${apiBaseUrl}/api/chat/stream/state?session_id=${encodeURIComponent(conversationId)}`)
+      const response = await fetch(`${apiBaseUrl}/api/chat/stream/state?session_id=${encodeURIComponent(conversationId)}`, {
+        credentials: 'include'
+      })
       if (!response.ok) {
+        if (response.status === 401) {
+          window.location.href = '/setup/google'
+        }
         return null
       }
       return await response.json()
@@ -313,10 +323,15 @@ class StreamManager {
       const sessionResponse = await fetch(`${apiBaseUrl}/api/chat/session`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
         body: JSON.stringify(sessionPayload)
       })
 
       if (!sessionResponse.ok) {
+        if (sessionResponse.status === 401) {
+          window.location.href = '/setup/google'
+          throw new Error('Session expired. Please sign in again.')
+        }
         const error = await sessionResponse.json().catch(() => ({ detail: 'Failed to start session' }))
         throw new Error(error.detail || 'Failed to start session')
       }
@@ -424,10 +439,15 @@ class StreamManager {
     const response = await fetch(`${apiBaseUrl}/api/chat/session/stop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ session_id: sessionId })
     })
 
     if (!response.ok) {
+      if (response.status === 401) {
+        window.location.href = '/setup/google'
+        throw new Error('Session expired. Please sign in again.')
+      }
       const error = await response.json().catch(() => ({ detail: 'Failed to stop session' }))
       throw new Error(error.detail || 'Failed to stop session')
     }
