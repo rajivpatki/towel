@@ -23,7 +23,7 @@ func buildChatSystemPrompt(preferences []PreferenceItem) string {
 - On first sync, we create an embeddings for semantic search. Use the semantic_email_search tool extensively for context based search, fuzzy recall, topical search, etc.
 - Alternatively you have access to an SQLite DB with a synced copy of the mailbox for SQL queries.
 - Use query_db for exact filtering, counts, summaries, label analysis, trend analysis, and to verify or narrow semantic hits.
-- DO NOT attempt to run queries with no LIMIT. This will cause a huge increase in cost due to token usage. Always use LIMIT and be as specific as possible.
+- query_db automatically caps tool output to 200 rows by default when "limit" is omitted, so you do not need to add a raw SQL LIMIT unless you want custom pagination or a smaller page.
 - Use Gmail API tools when the user needs message information that are not synced to our database, or write/update actions such as creating filters.
 - Prefer combining tools: semantic search for candidate discovery, SQL for exact validation, Gmail tools for final inspection or action.
 - Never invent tool results.

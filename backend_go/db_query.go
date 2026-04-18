@@ -29,6 +29,9 @@ type DBQueryResponse struct {
 }
 
 var allowedDBStatementPrefix = regexp.MustCompile(`(?is)^\s*(select|with|pragma|explain)\b`)
+var outerLimitedDBStatementPrefix = regexp.MustCompile(`(?is)^\s*(select|with)\b`)
+
+const defaultQueryDBToolLimit = 200
 
 func (a *App) handleEmailSyncStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -94,7 +97,11 @@ func (a *App) handleEmailSyncTrigger(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) executeQueryDBTool(arguments map[string]any) (string, error) {
 	sqlText, _ := arguments["sql"].(string)
-	response, err := a.executeSafeDBQuery(sqlText, 100)
+	limit, err := queryDBToolLimitFromArguments(arguments)
+	if err != nil {
+		return "", err
+	}
+	response, err := a.executeSafeDBQuery(sqlText, limit)
 	if err != nil {
 		return "", err
 	}
@@ -116,15 +123,46 @@ func (a *App) executeQueryDBTool(arguments map[string]any) (string, error) {
 	return string(result), nil
 }
 
+func queryDBToolLimitFromArguments(arguments map[string]any) (int, error) {
+	value, ok := arguments["limit"]
+	if !ok || value == nil {
+		return defaultQueryDBToolLimit, nil
+	}
+
+	switch typed := value.(type) {
+	case float64:
+		limit := int(typed)
+		if float64(limit) != typed || limit <= 0 {
+			return 0, fmt.Errorf("limit must be a positive integer")
+		}
+		return limit, nil
+	case int:
+		if typed <= 0 {
+			return 0, fmt.Errorf("limit must be a positive integer")
+		}
+		return typed, nil
+	default:
+		return 0, fmt.Errorf("limit must be a positive integer")
+	}
+}
+
 func (a *App) executeSafeDBQuery(rawSQL string, maxRows int) (DBQueryResponse, error) {
 	normalizedSQL := strings.TrimSpace(rawSQL)
+	normalizedSQL = strings.TrimSuffix(normalizedSQL, ";")
+	normalizedSQL = strings.TrimSpace(normalizedSQL)
 	if normalizedSQL == "" {
 		return DBQueryResponse{}, fmt.Errorf("sql is required")
 	}
 	if err := validateSafeDBQuery(normalizedSQL); err != nil {
 		return DBQueryResponse{}, err
 	}
-	rows, err := a.db.Query(normalizedSQL)
+	querySQL := normalizedSQL
+	enforcedLimit := false
+	if outerLimitedDBStatementPrefix.MatchString(normalizedSQL) {
+		querySQL = fmt.Sprintf("SELECT * FROM (%s) LIMIT %d", normalizedSQL, maxRows+1)
+		enforcedLimit = true
+	}
+	rows, err := a.db.Query(querySQL)
 	if err != nil {
 		return DBQueryResponse{}, err
 	}
@@ -164,6 +202,8 @@ func (a *App) executeSafeDBQuery(rawSQL string, maxRows int) (DBQueryResponse, e
 	notes := make([]string, 0, 2)
 	if truncated {
 		notes = append(notes, fmt.Sprintf("Results were truncated to the first %d rows.", maxRows))
+	} else if enforcedLimit {
+		notes = append(notes, fmt.Sprintf("An automatic outer LIMIT of %d rows was applied to this query result.", maxRows))
 	}
 	if strings.TrimSpace(status.LastSyncError) != "" {
 		notes = append(notes, "The latest mailbox sync recorded an error. Inspect sync status before trusting freshness-sensitive queries.")
@@ -277,7 +317,9 @@ func (a *App) buildQueryDBToolDefinition() GmailToolDefinition {
 			"Allowed views: synced_email_labels_with_names (joins message-label pairs with human-readable label names - use this for label queries instead of raw tables).",
 			"Key synced_emails columns: message_id, thread_id, history_id, subject, subject_normalized, snippet, from_name, from_email, from_raw, reply_to, to_addresses, cc_addresses, bcc_addresses, delivered_to, date_header, internal_date_unix, internal_date, size_estimate, body_text, body_html, body_size_estimate, attachment_count, attachment_names, attachment_total_size, label_ids, list_unsubscribe, list_unsubscribe_post, list_id, precedence_header, auto_submitted_header, feedback_id, in_reply_to, references_header, is_unread, is_starred, is_important, is_in_inbox, is_in_spam, is_in_trash, has_attachments, is_deleted, deleted_at, sync_updated_at.",
 			"Key email_embeddings columns: id, message_id, thread_id, chunk_index, embedding_text, embedding_vector, subject, from_email, internal_date_unix, has_attachments, is_in_trash, is_in_spam, embedding_provider, embedding_model, embedding_dimensions, source_sync_updated_at, indexed_at, updated_at.",
-			"Keep queries read-only and relevant to the synced email cache. Prefer WHERE clauses and explicit LIMITs for large result sets.",
+			fmt.Sprintf("This tool automatically applies an outer row cap of %d when `limit` is omitted. For ordinary SELECT or WITH queries, the runtime enforces it as `SELECT * FROM (<your_sql>) LIMIT %d`, so you usually do not need to add a raw LIMIT yourself unless you want custom pagination or a smaller page.", defaultQueryDBToolLimit, defaultQueryDBToolLimit),
+			"If you need pagination, write the SQL explicitly with LIMIT and OFFSET in your query and optionally also pass `limit` so the tool output budget matches your intended page size.",
+			"Keep queries read-only and relevant to the synced email cache. Prefer WHERE clauses, deterministic ORDER BY clauses, and pagination when result sets may be large.",
 		}, " "),
 		Parameters: map[string]any{
 			"type": "object",
@@ -285,6 +327,10 @@ func (a *App) buildQueryDBToolDefinition() GmailToolDefinition {
 				"sql": map[string]any{
 					"type":        "string",
 					"description": "A single read-only SQL query against email_sync_state, synced_emails, synced_email_attachments, or synced_email_labels_with_names.",
+				},
+				"limit": map[string]any{
+					"type":        "integer",
+					"description": fmt.Sprintf("Optional maximum number of rows to return. Defaults to %d when omitted.", defaultQueryDBToolLimit),
 				},
 			},
 			"required":             []string{"sql"},
