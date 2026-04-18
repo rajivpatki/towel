@@ -241,6 +241,14 @@ func (a *App) performPartialEmailSync(cursor string) (emailSyncResult, error) {
 		log.Printf("email partial sync fetching changed message: message_id=%s", messageID)
 		message, fetchErr := a.fetchGmailMessage(messageID)
 		if fetchErr != nil {
+			if errors.Is(fetchErr, errGmailMessageNotFound) {
+				log.Printf("email partial sync message missing during refetch; marking deleted: message_id=%s", messageID)
+				if err := a.markSyncedEmailDeleted(messageID); err != nil {
+					return emailSyncResult{}, err
+				}
+				delete(changes.Deleted, messageID)
+				continue
+			}
 			return emailSyncResult{}, fetchErr
 		}
 		log.Printf("email partial sync fetch successful: message_id=%s internal_date=%s history_id=%s", message.ID, message.InternalDate, message.HistoryID)

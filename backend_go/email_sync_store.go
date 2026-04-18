@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"mime"
@@ -15,6 +16,8 @@ import (
 	"strings"
 	"time"
 )
+
+var errGmailMessageNotFound = errors.New("gmail message not found")
 
 type gmailMessageResource struct {
 	ID           string   `json:"id"`
@@ -298,7 +301,11 @@ func (a *App) fetchGmailMessage(messageID string) (gmailMessageResource, error) 
 	params := url.Values{}
 	params.Set("format", "full")
 	var message gmailMessageResource
-	if _, err := a.doGmailJSONRequest(http.MethodGet, "/users/me/messages/"+url.PathEscape(messageID), params, nil, &message); err != nil {
+	statusCode, err := a.doGmailJSONRequest(http.MethodGet, "/users/me/messages/"+url.PathEscape(messageID), params, nil, &message)
+	if err != nil {
+		if statusCode == http.StatusNotFound {
+			return gmailMessageResource{}, errGmailMessageNotFound
+		}
 		return gmailMessageResource{}, err
 	}
 	return message, nil
@@ -371,6 +378,9 @@ func (a *App) listGmailHistoryChanges(cursor string) (historyChangeSet, string, 
 			break
 		}
 		pageToken = response.NextPageToken
+	}
+	for messageID := range changes.Deleted {
+		delete(changes.Upsert, messageID)
 	}
 	return changes, lastHistoryID, nil
 }
