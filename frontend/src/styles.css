@@ -1184,28 +1184,45 @@ label span {
 
 .markdown-table-scroll {
   max-width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
   margin: 0 0 0.75rem;
   scrollbar-width: thin;
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.44);
 }
 
 .markdown-table-scroll > table {
   width: max-content;
   min-width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: auto;
 }
 
 .markdown-content th,
 .markdown-content td {
-  border: 1px solid var(--color-border);
-  padding: 0.45rem 0.6rem;
+  border-right: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  padding: 0.32rem 0.45rem;
   text-align: left;
   vertical-align: top;
   white-space: normal;
   word-break: normal;
   overflow-wrap: anywhere;
+}
+
+.markdown-content th {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.markdown-table-scroll > table th:last-child,
+.markdown-table-scroll > table td:last-child {
+  border-right: none;
+}
+
+.markdown-table-scroll > table tbody tr:last-child td {
+  border-bottom: none;
 }
 
 .markdown-content pre {
@@ -1237,12 +1254,13 @@ label span {
 
 .message.user .markdown-content th,
 .message.user .markdown-content td,
+.message.user .markdown-table-scroll,
 .message.user .message-actions {
   border-color: rgba(255, 255, 255, 0.25);
 }
 
 .message-actions {
-  font-size: 0.9375rem;
+  font-size: 0.7rem;
   color: var(--color-text-tertiary);
   margin-top: 0.5rem;
   padding-top: 0.5rem;
@@ -1251,6 +1269,11 @@ label span {
   max-height: 20vh;
   overflow-y: auto;
   overflow-x: hidden;
+  line-height: 1.4;
+}
+
+.message.user .markdown-table-scroll {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .message-action-item {

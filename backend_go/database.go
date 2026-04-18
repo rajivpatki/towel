@@ -474,7 +474,7 @@ func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []Sett
 			reasoningMode = "standard"
 		}
 		if verbosity == "" {
-			verbosity = "medium"
+			verbosity = "low"
 		}
 		if _, err := a.db.Exec(`INSERT INTO custom_agents (agent_id, provider, auth_mode, label, model, reasoning_mode, verbosity, base_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, agentID, provider, authMode, label, model, reasoningMode, verbosity, baseURL); err != nil {
 			return err

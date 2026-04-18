@@ -36,7 +36,7 @@ function newAgent() {
     label: '',
     model: '',
     reasoning_mode: 'standard',
-    verbosity: 'medium',
+    verbosity: 'low',
     base_url: '',
     is_custom: true
   }

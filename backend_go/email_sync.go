@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	emailSyncRecentWindowDays = 7
+	emailSyncRecentWindowDays = 90
 	emailSyncInterval         = 5 * time.Minute
 	emailSyncFreshnessMaxAge  = 2 * time.Minute
 )
@@ -365,7 +365,7 @@ func (a *App) markEmailSyncStarted(mode string, reason string, mailboxEmail stri
 
 func (a *App) markEmailSyncSucceeded(mode string, reason string, mailboxEmail string, result emailSyncResult) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := a.db.Exec(`UPDATE email_sync_state SET mailbox_email = ?, sync_status = 'idle', sync_mode = NULL, last_sync_reason = ?, last_sync_completed_at = ?, last_successful_sync_at = ?, last_full_sync_completed_at = CASE WHEN ? = 'full' THEN ? ELSE last_full_sync_completed_at END, last_partial_sync_completed_at = CASE WHEN ? = 'partial' THEN ? ELSE last_partial_sync_completed_at END, sync_cursor_history_id = ?, last_history_id = ?, last_sync_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, mailboxEmail, reason, now, now, mode, now, mode, now, nullIfEmpty(result.CursorHistoryID), nullIfEmpty(result.LastHistoryID))
+	_, err := a.db.Exec(`UPDATE email_sync_state SET mailbox_email = ?, sync_status = 'idle', sync_mode = NULL, last_sync_reason = ?, last_sync_completed_at = ?, last_successful_sync_at = ?, last_full_sync_completed_at = CASE WHEN ? = 'full' THEN ? ELSE last_full_sync_completed_at END, last_partial_sync_completed_at = CASE WHEN ? = 'partial' THEN ? ELSE last_partial_sync_completed_at END, synced_window_days = CASE WHEN ? = 'full' THEN ? ELSE synced_window_days END, sync_cursor_history_id = ?, last_history_id = ?, last_sync_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, mailboxEmail, reason, now, now, mode, now, mode, now, mode, emailSyncRecentWindowDays, nullIfEmpty(result.CursorHistoryID), nullIfEmpty(result.LastHistoryID))
 	return err
 }
 
