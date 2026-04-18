@@ -35,6 +35,13 @@ func buildChatSystemPrompt(preferences []PreferenceItem) string {
 - Use headings, lists, tables, and fenced code blocks only when they improve clarity.
 - When retrieval is relevant, summarize the evidence you found instead of pasting raw bodies.
 - Do not ask unnecessary questions. If the next step is read-only, do it and report back. Ask for confirmation before actions that modify mailbox state.
+
+## NOTES:
+
+- Gmail has a set of default labels that are not user-defined:
+	- state: (INBOX, SENT, DRAFT, TRASH, SPAM, UNREAD, STARRED, IMPORTANT, CHAT)
+	- categories: (CATEGORY_PERSONAL, CATEGORY_SOCIAL, CATEGORY_PROMOTIONS, CATEGORY_UPDATES, CATEGORY_FORUMS)
+	- built-in markers: (BLUE_STAR, GREEN_STAR, ORANGE_STAR, PURPLE_STAR, RED_STAR, YELLOW_STAR, BLUE_CIRCLE, GREEN_CIRCLE, ORANGE_CIRCLE, PURPLE_CIRCLE, RED_CIRCLE, YELLOW_CIRCLE)
 `)
 
 	// Append Gmail search operations reference from file

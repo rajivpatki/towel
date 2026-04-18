@@ -1,6 +1,8 @@
 ## Query paramenters for search and filter
 
-Here are some search operation query parameters and their possible values with examples that can be used to refine searches in relation to the user's query. Use them creatively to search and filter email instead of brute forcing expensive and slow list operations.
+This API query tool should not be used instead of the available SQL query tool which is more versatile, unless the synced state is not expected to contain the messages (emails are beyond the sync window) or table columns do not provide the information necessary for the task.
+
+Here are search operation query parameters and their possible values with examples that can be used to refine searches in relation to the user's query. Use them creatively to search and filter email instead of brute forcing expensive and slow list operations.
 
 These query parameters can be combined in any way to create complex searches. You can also use the query terms to define automated filters for GMails actions like labelling, archiving, and deleting.
 
