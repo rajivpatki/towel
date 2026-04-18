@@ -216,8 +216,11 @@ func normalizeSQLValue(value any) any {
 }
 
 func (a *App) allToolDefinitions() []GmailToolDefinition {
-	definitions := make([]GmailToolDefinition, 0, len(gmailToolDefinitions)+1)
+	definitions := make([]GmailToolDefinition, 0, len(gmailToolDefinitions)+2)
 	definitions = append(definitions, gmailToolDefinitions...)
+	if semanticTool, ok := a.buildSemanticEmailSearchToolDefinition(); ok {
+		definitions = append(definitions, semanticTool)
+	}
 	definitions = append(definitions, a.buildQueryDBToolDefinition())
 	return definitions
 }
@@ -226,7 +229,7 @@ func allToolDefinitionsSnapshot() []GmailToolDefinition {
 	if appInstance != nil {
 		return appInstance.allToolDefinitions()
 	}
-	definitions := make([]GmailToolDefinition, 0, len(gmailToolDefinitions))
+	definitions := make([]GmailToolDefinition, 0, len(gmailToolDefinitions)+1)
 	definitions = append(definitions, gmailToolDefinitions...)
 	return definitions
 }
@@ -267,11 +270,13 @@ func (a *App) buildQueryDBToolDefinition() GmailToolDefinition {
 		SafetyModel:  "read_only",
 		Description: strings.Join([]string{
 			"Query the local SQLite Gmail cache instead of calling Gmail APIs when cached data is sufficient.",
+			"Use semantic_email_search for fuzzy topic recall or concept search, then use this tool for exact validation, counts, grouping, or deterministic filtering.",
 			"The cache is populated by a full sync of roughly the last 30 days of mail using users.messages.list plus users.messages.get(format=full), then kept updated by incremental users.history.list(startHistoryId=...) syncs every 5 minutes and before freshness-sensitive chat requests; if Gmail returns history 404, the app falls back to a fresh 30-day full sync.",
 			"Current sync context: " + statusSummary + ".",
-			"Allowed tables: email_sync_state (sync cursor/freshness metadata), synced_emails (one row per cached Gmail message with headers, normalized subject, body text/html, labels JSON, attachment names JSON, sizes, sender and unsubscribe metadata), synced_email_attachments (one row per attachment name with mime type and size metadata).",
+			"Allowed tables: email_sync_state (sync cursor/freshness metadata), synced_emails (one row per cached Gmail message with headers, normalized subject, body text/html, labels JSON, attachment names JSON, sizes, sender and unsubscribe metadata), synced_email_attachments (one row per attachment name with mime type and size metadata), email_embeddings (one row per semantic embedding chunk with embedding text, provider/model metadata, sender/date flags, and cached vector JSON).",
 			"Allowed views: synced_email_labels_with_names (joins message-label pairs with human-readable label names - use this for label queries instead of raw tables).",
 			"Key synced_emails columns: message_id, thread_id, history_id, subject, subject_normalized, snippet, from_name, from_email, from_raw, reply_to, to_addresses, cc_addresses, bcc_addresses, delivered_to, date_header, internal_date_unix, internal_date, size_estimate, body_text, body_html, body_size_estimate, attachment_count, attachment_names, attachment_total_size, label_ids, list_unsubscribe, list_unsubscribe_post, list_id, precedence_header, auto_submitted_header, feedback_id, in_reply_to, references_header, is_unread, is_starred, is_important, is_in_inbox, is_in_spam, is_in_trash, has_attachments, is_deleted, deleted_at, sync_updated_at.",
+			"Key email_embeddings columns: id, message_id, thread_id, chunk_index, embedding_text, embedding_vector, subject, from_email, internal_date_unix, has_attachments, is_in_trash, is_in_spam, embedding_provider, embedding_model, embedding_dimensions, source_sync_updated_at, indexed_at, updated_at.",
 			"Keep queries read-only and relevant to the synced email cache. Prefer WHERE clauses and explicit LIMITs for large result sets.",
 		}, " "),
 		Parameters: map[string]any{

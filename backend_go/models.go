@@ -26,6 +26,9 @@ type App struct {
 	emailSyncMu      sync.Mutex
 	emailSyncRunning bool
 
+	emailEmbeddingMu      sync.Mutex
+	emailEmbeddingRunning bool
+
 	streamMu         sync.Mutex
 	streamSessions   map[string]*streamSession
 	nextSubscriberID int64
@@ -274,13 +277,13 @@ var agentDefinitions = []AgentDefinition{
 		BaseURL:       "https://api.openai.com/v1",
 	},
 	{
-		AgentID:       "gemini:gemini-2.5-flash",
+		AgentID:       "gemini:gemini-3-flash-preview",
 		Provider:      "gemini",
 		AuthMode:      "google_oauth",
-		Label:         "Google Gemini 2.5 Flash",
-		Model:         "gemini-2.5-flash",
+		Label:         "Google Gemini 3 Flash",
+		Model:         "gemini-3-flash-preview",
 		ReasoningMode: "thinking",
-		Verbosity:     "medium",
+		Verbosity:     "low",
 		BaseURL:       "https://generativelanguage.googleapis.com/v1beta",
 	},
 	{

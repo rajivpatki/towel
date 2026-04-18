@@ -75,9 +75,12 @@ function GoogleOAuth({ onStatusChange }) {
 
         <div>
           <p className="eyebrow">Step 1 of 3</p>
-          <h2>Google OAuth Credentials</h2>
+          <h2 style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <img src="https://www.google.com/favicon.ico" alt="Google" style={{ width: '24px', height: '24px' }} />
+            Google OAuth Credentials
+          </h2>
           <p className="hero-copy">
-            Enter your Google OAuth desktop app credentials to enable secure Gmail access and Gemini setup.
+            Create a Google OAuth screen from your own account to access your Gmail.
           </p>
         </div>
 
@@ -85,19 +88,6 @@ function GoogleOAuth({ onStatusChange }) {
           <div className="instruction-box">
             <h3>How to get your Client ID and Secret</h3>
             <ol className="instruction-steps">
-              <li>
-                First, enable the
-                {" "}
-                <a
-                  href="https://console.cloud.google.com/flows/enableapi?apiid=generativelanguage.googleapis.com"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Google Generative Language API
-                </a>
-                {" "}
-                for the same Google Cloud project.
-              </li>
               <li>
                 Open
                 {" "}
@@ -109,10 +99,10 @@ function GoogleOAuth({ onStatusChange }) {
                   Google Configure the OAuth Consent Screen
                 </a>
                 {" "}
-                and configure your app (you can name it "Towel" and use your own email).
+                and configure your app.
               </li>
               <li>
-                Then go to
+                Next, go to
                 {" "}
                 <a
                   href="https://console.cloud.google.com/auth/clients/create"
@@ -127,10 +117,32 @@ function GoogleOAuth({ onStatusChange }) {
                 Copy the generated <strong>Client ID</strong> and <strong>Client secret</strong> from the
                 Google dialog and paste them into the fields below.
               </li>
+              <li>
+                Enable the
+                {" "}
+                <a
+                  href="https://console.cloud.google.com/apis/library/gmail.googleapis.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Gmail
+                </a>
+                {" "}
+                and
+                {" "}
+                <a
+                  href="https://console.cloud.google.com/flows/enableapi?apiid=generativelanguage.googleapis.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Gemini
+                </a>
+                {" "}
+                APIs for the same Google Cloud project.
+              </li>
             </ol>
             <p className="note">
-              Towel stores these credentials encrypted on disk inside your self-hosted instance. They
-              are never sent to any service other than Google.
+              These credentials are stored on your device. Do not share these with anyone.
             </p>
             <p className="note">
               During the Google consent screen in Step 2, approve every requested permission so Gemini and Gmail can both work.

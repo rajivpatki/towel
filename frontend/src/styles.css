@@ -1938,23 +1938,41 @@ label span {
   justify-content: flex-end;
 }
 
-.development-status-strip {
+.development-query-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem;
-  margin-bottom: 1rem;
+  justify-content: flex-end;
+}
+
+.development-status-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 0.85rem;
+}
+
+.status-pill.neutral {
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--color-text-secondary);
+  border-color: var(--color-border);
+}
+
+.status-pill.neutral strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
 }
 
 .development-meta-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
 }
 
 .development-meta-card {
   display: grid;
-  gap: 0.35rem;
-  padding: 1rem 1.1rem;
+  gap: 0.2rem;
+  padding: 0.8rem 0.95rem;
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border);
   background: rgba(255, 255, 255, 0.5);
@@ -1968,9 +1986,9 @@ label span {
 
 .development-meta-card strong {
   color: var(--color-text-primary);
-  font-size: 0.95rem;
+  font-size: 0.875rem;
   font-weight: 600;
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 .development-sql-input {
@@ -1984,6 +2002,27 @@ label span {
 
 .development-query-hints {
   margin-top: 1rem;
+}
+
+.development-inline-results {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+}
+
+.development-inline-results-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.development-inline-results-header h4 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+  color: var(--color-text-primary);
 }
 
 .development-query-hints p,
@@ -2250,14 +2289,17 @@ label span {
   .llm-option-header,
   .wizard-navigation,
   .development-panel-header,
-  .development-status-actions {
+  .development-status-actions,
+  .development-query-actions,
+  .development-inline-results-header {
     flex-direction: column;
     align-items: stretch;
   }
 
   .gemini-btn,
   .gemini-enable-btn,
-  .development-status-actions button {
+  .development-status-actions button,
+  .development-query-actions button {
     width: 100%;
   }
 

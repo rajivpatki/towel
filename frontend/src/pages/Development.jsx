@@ -58,6 +58,29 @@ function formatCellValue(value) {
   return String(value)
 }
 
+function downloadTextFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType })
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(url)
+}
+
+function escapeCSVValue(value) {
+  const text = formatCellValue(value)
+  if (text === 'â€”') {
+    return ''
+  }
+  if (/[",\n]/.test(text)) {
+    return `"${text.replaceAll('"', '""')}"`
+  }
+  return text
+}
+
 function Development({ initialSyncStatus, onStatusChange }) {
   const { showToast } = useToast()
   const [syncStatus, setSyncStatus] = useState(initialSyncStatus || null)
@@ -72,16 +95,27 @@ function Development({ initialSyncStatus, onStatusChange }) {
       return []
     }
     return [
+      { label: 'Last sync', value: formatTimestamp(syncStatus.last_successful_sync_at) },
+      { label: 'Newest mail', value: formatTimestamp(syncStatus.newest_message_at) },
+      { label: 'Oldest mail', value: formatTimestamp(syncStatus.oldest_message_at) },
+      { label: 'History cursor', value: syncStatus.sync_cursor_history_id ? 'Present' : 'Not set' },
+      { label: 'Embeddings', value: `${syncStatus.embedding_count || 0} indexed` },
+      { label: 'Embedding model', value: syncStatus.embedding_model || 'Unavailable' }
+    ]
+  }, [syncStatus])
+
+  const syncSummaryItems = useMemo(() => {
+    if (!syncStatus) {
+      return []
+    }
+    const embeddingsLabel = syncStatus.embedding_model
+      ? `${syncStatus.embedding_count || 0} ${syncStatus.embedding_model}`
+      : `${syncStatus.embedding_count || 0} indexed`
+    return [
       { label: 'Mailbox', value: syncStatus.mailbox_email || 'Not connected' },
-      { label: 'State', value: syncStatus.sync_status || 'idle' },
       { label: 'Window', value: `${syncStatus.synced_window_days || 0} days` },
-      { label: 'Messages', value: String(syncStatus.message_count || 0) },
-      { label: 'Last successful sync', value: formatTimestamp(syncStatus.last_successful_sync_at) },
-      { label: 'Last full sync', value: formatTimestamp(syncStatus.last_full_sync_completed_at) },
-      { label: 'Last partial sync', value: formatTimestamp(syncStatus.last_partial_sync_completed_at) },
-      { label: 'Newest cached message', value: formatTimestamp(syncStatus.newest_message_at) },
-      { label: 'Oldest cached message', value: formatTimestamp(syncStatus.oldest_message_at) },
-      { label: 'History cursor', value: syncStatus.sync_cursor_history_id || 'Not set' }
+      { label: 'Messages', value: `${syncStatus.message_count || 0}` },
+      { label: 'Embeddings', value: embeddingsLabel }
     ]
   }, [syncStatus])
 
@@ -182,6 +216,18 @@ function Development({ initialSyncStatus, onStatusChange }) {
     }
   }
 
+  function downloadQueryAsCSV() {
+    if (!queryResult || !Array.isArray(queryResult.columns) || !Array.isArray(queryResult.rows)) {
+      return
+    }
+    const header = queryResult.columns.map(escapeCSVValue).join(',')
+    const rows = queryResult.rows.map((row) =>
+      queryResult.columns.map((column) => escapeCSVValue(row[column])).join(',')
+    )
+    const csv = [header, ...rows].join('\n')
+    downloadTextFile('sql-results.csv', csv, 'text/csv;charset=utf-8')
+  }
+
   return (
     <div className="development-page">
       <div className="development-hero">
@@ -215,8 +261,11 @@ function Development({ initialSyncStatus, onStatusChange }) {
           <span className={`status-pill${syncStatus?.sync_status === 'running' ? ' pending' : ' ok'}`}>
             {syncStatus?.sync_status || 'idle'}
           </span>
-          <span className="status-pill pending">{`${syncStatus?.synced_window_days || 0} day window`}</span>
-          <span className="status-pill ok">{`${syncStatus?.message_count || 0} messages cached`}</span>
+          {syncSummaryItems.map((item) => (
+            <span key={item.label} className="status-pill neutral">
+              <strong>{item.label}:</strong>&nbsp;{item.value}
+            </span>
+          ))}
         </div>
 
         {syncStatus?.last_sync_error ? (
@@ -240,12 +289,19 @@ function Development({ initialSyncStatus, onStatusChange }) {
           <div>
             <h3>SQL console</h3>
             <p className="development-section-copy">
-              Allowed tables: <code>email_sync_state</code>, <code>synced_emails</code>, <code>synced_email_labels</code>, and <code>synced_email_attachments</code>.
+              Allowed tables: <code>email_sync_state</code>, <code>synced_emails</code>, <code>synced_email_labels</code>, <code>synced_email_attachments</code>, and <code>email_embeddings</code>.
             </p>
           </div>
-          <button type="button" onClick={runQuery} disabled={runningQuery || !sql.trim()}>
-            {runningQuery ? 'Running...' : 'Run query'}
-          </button>
+          <div className="development-query-actions">
+            {queryResult ? (
+              <button type="button" className="secondary" onClick={downloadQueryAsCSV}>
+                Download CSV
+              </button>
+            ) : null}
+            <button type="button" onClick={runQuery} disabled={runningQuery || !sql.trim()}>
+              {runningQuery ? 'Running...' : 'Run query'}
+            </button>
+          </div>
         </div>
 
         <textarea
@@ -258,22 +314,21 @@ function Development({ initialSyncStatus, onStatusChange }) {
         <div className="info-box development-query-hints">
           <p>Only single read-only <code>SELECT</code>, <code>WITH</code>, <code>PRAGMA</code>, or <code>EXPLAIN</code> statements are allowed.</p>
         </div>
-      </section>
 
-      <section className="panel development-section development-results-panel">
-        <div className="panel-header development-panel-header">
-          <div>
-            <h3>Results</h3>
-            <p className="development-section-copy">Query results render as a table and include the sync context returned by the backend.</p>
+        <div className="development-inline-results">
+          <div className="development-inline-results-header">
+            <div>
+              <h4>Results</h4>
+              <p className="development-section-copy">Query results render inline with the SQL console and include the sync context returned by the backend.</p>
+            </div>
+            {queryResult ? <span className="status-pill ok">{`${queryResult.row_count} rows`}</span> : null}
           </div>
-          {queryResult ? <span className="status-pill ok">{`${queryResult.row_count} rows`}</span> : null}
-        </div>
 
-        {!queryResult ? (
-          <div className="info-box development-empty-state">
-            <p>Run a query to inspect the email cache.</p>
-          </div>
-        ) : (
+          {!queryResult ? (
+            <div className="info-box development-empty-state">
+              <p>Run a query to inspect the email cache.</p>
+            </div>
+          ) : (
           <>
             {Array.isArray(queryResult.notes) && queryResult.notes.length > 0 ? (
               <div className="development-notes">
@@ -312,7 +367,8 @@ function Development({ initialSyncStatus, onStatusChange }) {
               </table>
             </div>
           </>
-        )}
+          )}
+        </div>
       </section>
     </div>
   )

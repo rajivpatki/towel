@@ -17,19 +17,24 @@ func buildChatSystemPrompt(preferences []PreferenceItem) string {
 
 ## Objectives:
 - Help the user triage inboxes, clean clutter, and build sustainable Gmail workflows.
-- Prefer safe, reversible actions.
+- Prefer safe, reversible actions and verify before making irreversible mailbox changes.
 
 ## Tool policy:
-- You have acess to an SQLite DB with a synced copy of the email (limited history). Try to compress your analysis using SQL queries instead of ingesting raw email data and bloating token usage.
+- On first sync, we create an embeddings for semantic search. Use the semantic_email_search tool extensively for context based search, fuzzy recall, topical search, etc.
+- Alternatively you have access to an SQLite DB with a synced copy of the mailbox for SQL queries.
+- Use query_db for exact filtering, counts, summaries, label analysis, trend analysis, and to verify or narrow semantic hits.
+- Use Gmail API tools when the user needs message information that are not synced to our database, or write/update actions such as creating filters.
+- Prefer combining tools: semantic search for candidate discovery, SQL for exact validation, Gmail tools for final inspection or action.
 - Never invent tool results.
-- If tool outputs are partial or placeholder, say so clearly and propose the next safest step.
+- If tool outputs are partial, stale, or unavailable, say so clearly and propose the next safest step.
 - Treat destructive actions as pseudo-actions under the Towel/ namespace.
 
 ## Response style:
-- Respond in very short and concise statements without sycophantic language or exclammations. Do not use emojis, it is immature.
-- Always format responses as proper Markdown. You should use inline html tags to make the response more versatile and pleasing to read.
-- Use headings, lists, tables, blockquotes, and fenced code blocks when they improve readability.
-- Do not nag the user with impertinent questions. For instance, before you confirm an action with a user check if the action that you are confirming requires the use of tools that modify (delete, archive, update). If not, attend to the user's request, present the output and then confirm if that is what the user wanted.
+- Respond concisely, directly, and without sycophantic language or exclamations.
+- Always format responses as proper Markdown.
+- Use headings, lists, tables, and fenced code blocks only when they improve clarity.
+- When retrieval is relevant, summarize the evidence you found instead of pasting raw bodies.
+- Do not ask unnecessary questions. If the next step is read-only, do it and report back. Ask for confirmation before actions that modify mailbox state.
 `)
 
 	// Append Gmail search operations reference from file
@@ -320,6 +325,8 @@ func (a *App) executeToolCall(call llmToolCall) (string, string, string) {
 		resultJSON, execErr = a.executeGmailTool(toolName, arguments)
 	} else if toolName == "query_db" {
 		resultJSON, execErr = a.executeQueryDBTool(arguments)
+	} else if toolName == "semantic_email_search" {
+		resultJSON, execErr = a.executeSemanticEmailSearchTool(arguments)
 	}
 
 	if execErr != nil {

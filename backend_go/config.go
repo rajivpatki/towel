@@ -85,8 +85,9 @@ func newApp(config Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	app.startEmailSyncLoop()
 	appInstance = app
+	app.startEmailSyncLoop()
+	app.refreshEmailEmbeddingsInBackground("startup", false)
 	return app, nil
 }
 

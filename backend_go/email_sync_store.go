@@ -519,8 +519,43 @@ func (a *App) upsertSyncedEmail(message gmailMessageResource) (syncedEmailRecord
 }
 
 func (a *App) markSyncedEmailDeleted(messageID string) error {
-	_, err := a.db.Exec(`UPDATE synced_emails SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP, sync_updated_at = CURRENT_TIMESTAMP WHERE message_id = ?`, messageID)
-	return err
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if _, err := tx.Exec(`UPDATE synced_emails SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP, sync_updated_at = CURRENT_TIMESTAMP WHERE message_id = ?`, messageID); err != nil {
+		return err
+	}
+	rows, err := tx.Query(`SELECT id FROM email_embeddings WHERE message_id = ?`, messageID)
+	if err != nil {
+		return err
+	}
+	embeddingIDs := make([]int64, 0)
+	for rows.Next() {
+		var embeddingID int64
+		if err := rows.Scan(&embeddingID); err != nil {
+			rows.Close()
+			return err
+		}
+		embeddingIDs = append(embeddingIDs, embeddingID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, embeddingID := range embeddingIDs {
+		if _, err := tx.Exec(`DELETE FROM email_embedding_index WHERE embedding_id = ?`, embeddingID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`DELETE FROM email_embeddings WHERE message_id = ?`, messageID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (a *App) pruneSyncedEmailsOutsideWindow(currentIDs []string) error {

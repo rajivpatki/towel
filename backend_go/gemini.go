@@ -26,6 +26,7 @@ type geminiFunctionResponse struct {
 
 type geminiPart struct {
 	Text             string                  `json:"text,omitempty"`
+	ThoughtSignature string                  `json:"thoughtSignature,omitempty"`
 	FunctionCall     *geminiFunctionCall     `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResponse `json:"functionResponse,omitempty"`
 }

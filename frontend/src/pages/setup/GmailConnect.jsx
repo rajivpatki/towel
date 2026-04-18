@@ -171,7 +171,7 @@ function GmailConnect({ onStatusChange }) {
           <div className="instruction-box">
             <h3>Before connecting</h3>
             <p>
-              If your OAuth app is in testing mode, add your Gmail address as a test user:
+              For Gmail access to work, add your Gmail address as a test user:
             </p>
             <ol className="instruction-steps">
               <li>Visit <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener noreferrer">OAuth consent screen</a></li>

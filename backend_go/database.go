@@ -171,6 +171,45 @@ func (a *App) initDB() error {
 			label_type TEXT,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS email_embeddings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id TEXT NOT NULL,
+			thread_id TEXT NOT NULL,
+			chunk_index INTEGER NOT NULL DEFAULT 0,
+			embedding_text TEXT NOT NULL,
+			source_fingerprint TEXT,
+			embedding_vector TEXT NOT NULL,
+			subject TEXT,
+			from_email TEXT,
+			internal_date_unix INTEGER NOT NULL DEFAULT 0,
+			has_attachments INTEGER NOT NULL DEFAULT 0,
+			is_in_trash INTEGER NOT NULL DEFAULT 0,
+			is_in_spam INTEGER NOT NULL DEFAULT 0,
+			embedding_provider TEXT NOT NULL,
+			embedding_model TEXT NOT NULL,
+			embedding_dimensions INTEGER NOT NULL,
+			source_sync_updated_at TEXT,
+			indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE (message_id, chunk_index),
+			FOREIGN KEY(message_id) REFERENCES synced_emails(message_id) ON DELETE CASCADE
+		);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_embeddings_message_chunk ON email_embeddings(message_id, chunk_index);`,
+		`CREATE INDEX IF NOT EXISTS idx_email_embeddings_internal_date_unix ON email_embeddings(internal_date_unix DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_email_embeddings_from_email ON email_embeddings(from_email);`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS email_embedding_index USING vec0(
+			embedding_id integer primary key,
+			embedding_vector float[768] distance_metric=cosine,
+			internal_date_unix integer,
+			has_attachments boolean,
+			is_in_trash boolean,
+			is_in_spam boolean,
+			from_email text,
+			+message_id text,
+			+thread_id text,
+			+subject text,
+			+embedding_text text
+		);`,
 		`CREATE VIEW IF NOT EXISTS synced_email_labels_with_names AS
 			SELECT
 				sel.message_id,
@@ -200,6 +239,9 @@ func (a *App) initDB() error {
 		return err
 	}
 	if err := a.ensureColumnExists("custom_agents", "auth_mode", "TEXT NOT NULL DEFAULT 'api_key'"); err != nil {
+		return err
+	}
+	if err := a.ensureColumnExists("email_embeddings", "source_fingerprint", "TEXT"); err != nil {
 		return err
 	}
 	return nil
@@ -351,11 +393,33 @@ func (a *App) saveGeminiSelection(agentID string) error {
 }
 
 func (a *App) saveSelectedAgent(agent AgentDefinition) error {
+	previousState, err := a.getSetupState()
+	if err != nil {
+		return err
+	}
+	previousEmbeddingConfig := emailEmbeddingConfig{}
+	previousEmbeddingSupported := false
+	if previousState.SelectedAgentID != nil && strings.TrimSpace(*previousState.SelectedAgentID) != "" {
+		if previousAgent, ok := getAgentDefinition(strings.TrimSpace(*previousState.SelectedAgentID)); ok {
+			previousEmbeddingConfig, previousEmbeddingSupported = resolveEmailEmbeddingConfig(previousAgent)
+		}
+	}
 	if _, err := a.db.Exec(`UPDATE setup_state SET selected_agent_id = ?, llm_provider = ?, llm_model = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, agent.AgentID, agent.Provider, agent.Model); err != nil {
 		return err
 	}
-	_, _, err := a.refreshOnboardingState()
-	return err
+	_, _, err = a.refreshOnboardingState()
+	if err != nil {
+		return err
+	}
+
+	nextEmbeddingConfig, nextEmbeddingSupported := resolveEmailEmbeddingConfig(agent)
+	if previousEmbeddingSupported != nextEmbeddingSupported ||
+		previousEmbeddingConfig.Provider != nextEmbeddingConfig.Provider ||
+		previousEmbeddingConfig.Model != nextEmbeddingConfig.Model ||
+		previousEmbeddingConfig.Dimensions != nextEmbeddingConfig.Dimensions {
+		a.refreshEmailEmbeddingsInBackground("selected_agent_changed", true)
+	}
+	return nil
 }
 
 func (a *App) isLLMConfigured(state SetupState) (bool, error) {

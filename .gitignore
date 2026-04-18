@@ -9,3 +9,5 @@ frontend/dist/
 *.db-journal
 data/
 **/dist/*
+**/.gocache
+**/.tmp
