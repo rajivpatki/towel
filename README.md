@@ -142,11 +142,13 @@ You will need the following ready:
 - **A Google OAuth Desktop App Client ID**
 - **A Google OAuth Desktop App Client Secret**
 - **A Gmail account** you want to connect
-- **An AI provider API key**
+- **Either an AI provider API key or a Google account you want to use for Gemini**
 
 Currently supported AI agents include:
 
 - **OpenAI GPT 5.4** via `openai:gpt-5.4`
+- **OpenAI GPT 5.4 Mini** via `openai:gpt-5.4-mini`
+- **Google Gemini 3 Flash** via `gemini:gemini-3-flash-preview`
 - **DeepSeek Thinking** via `deepseek:deepseek-thinking`
 
 ### Step 1: Create Google OAuth credentials
@@ -175,9 +177,20 @@ Then return to Towel and continue the Gmail connection step.
 
 ### Step 3: Configure your AI agent
 
-In the final setup step, choose an AI model and paste the matching provider API key.
+In the final setup step, choose an AI model.
 
-Setup completes only after a valid AI agent and API key are saved.
+You have two setup paths:
+
+- **OpenAI or DeepSeek**
+  Choose the model and paste the matching provider API key.
+- **Gemini**
+  Click `Use Gemini` and Towel will use your connected Google account instead of asking for another API key.
+
+For Gemini, Towel will probe Google access before saving the selection. If the Google Generative Language API is not enabled yet, Towel shows a link to enable it in Google Cloud and then you can retry.
+
+If you are creating a brand new eligible Google Cloud account, Google currently advertises **up to `$300` in free trial credits** for new users. This is a Google Cloud offer, not a Towel offer, and eligibility and duration are determined by Google.
+
+Setup completes only after a valid AI agent is configured successfully.
 
 ## Data and persistence
 
@@ -223,5 +236,8 @@ docker compose up --build
 - **Google authorization fails**
   Verify your Client ID and Client Secret, and make sure your Gmail address is listed as a test user if the OAuth app is not yet published.
 
+- **Gemini does not activate**
+  Confirm that Step 2 completed, approve every requested Google permission, and enable the Google Generative Language API in your Google Cloud project if Towel prompts you to do so.
+
 - **Setup does not finish**
-  Confirm that Gmail is connected and that you entered a valid API key for one of the supported AI agents.
+  Confirm that Gmail is connected and that you either entered a valid API key for an API-key model or completed the Gemini activation flow successfully.

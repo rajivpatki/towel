@@ -277,6 +277,16 @@ var agentDefinitions = []AgentDefinition{
 		BaseURL:       "https://api.openai.com/v1",
 	},
 	{
+		AgentID:       "openai:gpt-5.4-mini",
+		Provider:      "openai",
+		AuthMode:      "api_key",
+		Label:         "OpenAI GPT 5.4 Mini",
+		Model:         "gpt-5.4-mini",
+		ReasoningMode: "thinking",
+		Verbosity:     "low",
+		BaseURL:       "https://api.openai.com/v1",
+	},
+	{
 		AgentID:       "gemini:gemini-3-flash-preview",
 		Provider:      "gemini",
 		AuthMode:      "google_oauth",

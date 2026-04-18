@@ -196,24 +196,24 @@ func (a *App) callGeminiLLM(ctx context.Context, agent AgentDefinition, accessTo
 			return content, actions, nil
 		}
 		contents = append(contents, candidate.Content)
-		for toolIndex, toolCall := range message.ToolCalls {
-			result, action, actionType := a.executeToolCall(toolCall)
-			actions = append(actions, action)
+		toolResults := a.executeToolCallsParallel(message.ToolCalls)
+		for _, toolResult := range toolResults {
+			actions = append(actions, toolResult.Action)
 			emitProgressUpdate(emitProgress, latestContent, actions)
-			if err := a.logActionHistory(actionType, action, result); err != nil {
+			if err := a.logActionHistory(toolResult.ActionType, toolResult.Action, toolResult.Result); err != nil {
 				return "", actions, fmt.Errorf("failed to record tool call: %w", err)
 			}
-			toolCallID := strings.TrimSpace(toolCall.ID)
+			toolCallID := strings.TrimSpace(toolResult.Call.ID)
 			if toolCallID == "" {
-				toolCallID = fmt.Sprintf("gemini_toolcall_%d_%d", iteration, toolIndex)
+				toolCallID = fmt.Sprintf("gemini_toolcall_%d_%d", iteration, toolResult.Index)
 			}
 			contents = append(contents, geminiContent{
 				Role: "user",
 				Parts: []geminiPart{{
 					FunctionResponse: &geminiFunctionResponse{
 						ID:       toolCallID,
-						Name:     toolCall.Function.Name,
-						Response: geminiFunctionResultPayload(result),
+						Name:     toolResult.Call.Function.Name,
+						Response: geminiFunctionResultPayload(toolResult.Result),
 					},
 				}},
 			})

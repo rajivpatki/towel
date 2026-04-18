@@ -23,6 +23,7 @@ func buildChatSystemPrompt(preferences []PreferenceItem) string {
 - On first sync, we create an embeddings for semantic search. Use the semantic_email_search tool extensively for context based search, fuzzy recall, topical search, etc.
 - Alternatively you have access to an SQLite DB with a synced copy of the mailbox for SQL queries.
 - Use query_db for exact filtering, counts, summaries, label analysis, trend analysis, and to verify or narrow semantic hits.
+- DO NOT attempt to run queries with no LIMIT. This will cause a huge increase in cost due to token usage. Always use LIMIT and be as specific as possible.
 - Use Gmail API tools when the user needs message information that are not synced to our database, or write/update actions such as creating filters.
 - Prefer combining tools: semantic search for candidate discovery, SQL for exact validation, Gmail tools for final inspection or action.
 - Never invent tool results.
@@ -146,6 +147,43 @@ func emitProgressUpdate(emitProgress func(string, []string), content string, act
 	emitProgress(strings.TrimSpace(content), actionsCopy)
 }
 
+type toolCallExecutionResult struct {
+	Index      int
+	Call       llmToolCall
+	Result     string
+	Action     string
+	ActionType string
+}
+
+func (a *App) executeToolCallsParallel(toolCalls []llmToolCall) []toolCallExecutionResult {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+
+	results := make([]toolCallExecutionResult, len(toolCalls))
+	resultCh := make(chan toolCallExecutionResult, len(toolCalls))
+
+	for index, toolCall := range toolCalls {
+		go func(index int, toolCall llmToolCall) {
+			result, action, actionType := a.executeToolCall(toolCall)
+			resultCh <- toolCallExecutionResult{
+				Index:      index,
+				Call:       toolCall,
+				Result:     result,
+				Action:     action,
+				ActionType: actionType,
+			}
+		}(index, toolCall)
+	}
+
+	for range toolCalls {
+		item := <-resultCh
+		results[item.Index] = item
+	}
+
+	return results
+}
+
 func (a *App) callLLM(ctx context.Context, agent AgentDefinition, apiKey string, messages []map[string]any, emitProgress func(string, []string)) (string, []string, error) {
 	tools := buildLLMToolsPayload()
 	actions := make([]string, 0)
@@ -182,22 +220,22 @@ func (a *App) callLLM(ctx context.Context, agent AgentDefinition, apiKey string,
 		}
 		messages = append(messages, assistantMessage)
 
-		for toolIndex, toolCall := range message.ToolCalls {
-			result, action, actionType := a.executeToolCall(toolCall)
-			actions = append(actions, action)
+		toolResults := a.executeToolCallsParallel(message.ToolCalls)
+		for _, toolResult := range toolResults {
+			actions = append(actions, toolResult.Action)
 			emitProgressUpdate(emitProgress, latestContent, actions)
-			if err := a.logActionHistory(actionType, action, result); err != nil {
+			if err := a.logActionHistory(toolResult.ActionType, toolResult.Action, toolResult.Result); err != nil {
 				return "", actions, fmt.Errorf("failed to record tool call: %w", err)
 			}
 
-			toolCallID := strings.TrimSpace(toolCall.ID)
+			toolCallID := strings.TrimSpace(toolResult.Call.ID)
 			if toolCallID == "" {
-				toolCallID = fmt.Sprintf("toolcall_%d_%d", iteration, toolIndex)
+				toolCallID = fmt.Sprintf("toolcall_%d_%d", iteration, toolResult.Index)
 			}
 			messages = append(messages, map[string]any{
 				"role":         "tool",
 				"tool_call_id": toolCallID,
-				"content":      result,
+				"content":      toolResult.Result,
 			})
 		}
 	}
