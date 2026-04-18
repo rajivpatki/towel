@@ -282,8 +282,9 @@ func sanitizeGeminiParameters(parameters map[string]any) map[string]any {
 }
 
 func buildGeminiToolsPayload() []map[string]any {
-	declarations := make([]map[string]any, 0, len(gmailToolDefinitions))
-	for _, tool := range gmailToolDefinitions {
+	definitions := allToolDefinitionsSnapshot()
+	declarations := make([]map[string]any, 0, len(definitions))
+	for _, tool := range definitions {
 		parameters := sanitizeGeminiParameters(tool.Parameters)
 		declarations = append(declarations, map[string]any{
 			"name":        strings.ReplaceAll(tool.Name, ".", "_"),

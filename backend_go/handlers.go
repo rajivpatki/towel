@@ -191,7 +191,7 @@ func (a *App) handleGmailTools(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
-	writeJSON(w, http.StatusOK, gmailToolDefinitions)
+	writeJSON(w, http.StatusOK, a.allToolDefinitions())
 }
 
 func (a *App) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -593,6 +593,10 @@ func (a *App) buildSetupStatus() (SetupStatus, error) {
 	if err != nil {
 		return SetupStatus{}, err
 	}
+	emailSync, err := a.getEmailSyncStatus()
+	if err != nil {
+		return SetupStatus{}, err
+	}
 	customAgents, err := a.getCustomAgents()
 	if err != nil {
 		return SetupStatus{}, err
@@ -606,11 +610,12 @@ func (a *App) buildSetupStatus() (SetupStatus, error) {
 		GoogleEmail:            state.GoogleEmail,
 		GoogleName:             state.GoogleName,
 		GooglePicture:          state.GooglePicture,
+		EmailSync:              emailSync,
 		LLMConfigured:          llmConfigured,
 		SelectedAgentID:        state.SelectedAgentID,
 		OnboardingCompleted:    state.OnboardingCompleted,
 		AvailableAgents:        availableAgents,
-		GmailTools:             gmailToolDefinitions,
+		GmailTools:             a.allToolDefinitions(),
 	}, nil
 }
 

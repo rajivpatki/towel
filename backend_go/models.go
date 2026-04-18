@@ -23,6 +23,9 @@ type App struct {
 	db         *sql.DB
 	httpClient *http.Client
 
+	emailSyncMu      sync.Mutex
+	emailSyncRunning bool
+
 	streamMu         sync.Mutex
 	streamSessions   map[string]*streamSession
 	nextSubscriberID int64
@@ -72,6 +75,7 @@ type SetupStatus struct {
 	GoogleEmail            *string               `json:"google_email"`
 	GoogleName             *string               `json:"google_name"`
 	GooglePicture          *string               `json:"google_picture"`
+	EmailSync              EmailSyncStatus       `json:"email_sync"`
 	LLMConfigured          bool                  `json:"llm_configured"`
 	SelectedAgentID        *string               `json:"selected_agent_id"`
 	OnboardingCompleted    bool                  `json:"onboarding_completed"`

@@ -76,6 +76,7 @@ func (a *App) processChatMessage(ctx context.Context, conversationID string, use
 	if err != nil {
 		return ChatMessageOut{}, err
 	}
+	a.maybeSyncEmailsBeforeChat(userMessage)
 
 	if err := a.ensureConversation(conversationID); err != nil {
 		return ChatMessageOut{}, err
@@ -193,8 +194,9 @@ func (a *App) callLLM(ctx context.Context, agent AgentDefinition, apiKey string,
 }
 
 func buildLLMToolsPayload() []map[string]any {
-	tools := make([]map[string]any, 0, len(gmailToolDefinitions))
-	for _, tool := range gmailToolDefinitions {
+	definitions := allToolDefinitionsSnapshot()
+	tools := make([]map[string]any, 0, len(definitions))
+	for _, tool := range definitions {
 		functionName := strings.ReplaceAll(tool.Name, ".", "_")
 		parameters := tool.Parameters
 		if parameters == nil {
@@ -317,6 +319,8 @@ func (a *App) executeToolCall(call llmToolCall) (string, string, string) {
 	var execErr error
 	if strings.HasPrefix(toolName, "users.") {
 		resultJSON, execErr = a.executeGmailTool(toolName, arguments)
+	} else if toolName == "query_db" {
+		resultJSON, execErr = a.executeQueryDBTool(arguments)
 	}
 
 	if execErr != nil {
@@ -357,7 +361,7 @@ func (a *App) executeToolCall(call llmToolCall) (string, string, string) {
 }
 
 func getToolDefinitionByFunctionName(functionName string) (GmailToolDefinition, bool) {
-	for _, tool := range gmailToolDefinitions {
+	for _, tool := range allToolDefinitionsSnapshot() {
 		if strings.ReplaceAll(tool.Name, ".", "_") == functionName {
 			return tool, true
 		}

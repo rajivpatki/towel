@@ -54,6 +54,7 @@ func (a *App) buildGoogleAuthURL() (string, error) {
 		"openid",
 		"email",
 		googleGeminiRetrieverScope,
+		"https://www.googleapis.com/auth/gmail.readonly",
 		"https://www.googleapis.com/auth/gmail.modify",
 		"https://www.googleapis.com/auth/gmail.labels",
 		"https://www.googleapis.com/auth/gmail.settings.basic",
@@ -144,6 +145,7 @@ func (a *App) completeGoogleOAuthCallback(code string, stateValue string) (strin
 	}
 
 	_, _, err = a.refreshOnboardingState()
+	a.syncEmailsInBackground("full", "account_connected")
 	return sessionID, err
 }
 

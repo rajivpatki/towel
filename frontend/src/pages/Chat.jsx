@@ -47,7 +47,17 @@ function notifyNewChat() {
 
 function MarkdownMessage({ content }) {
   return (
-    <ReactMarkdown rehypePlugins={[rehypeRaw]} remarkPlugins={[remarkGfm]}>
+    <ReactMarkdown
+      rehypePlugins={[rehypeRaw]}
+      remarkPlugins={[remarkGfm]}
+      components={{
+        table: ({ ...props }) => (
+          <div className="markdown-table-scroll">
+            <table {...props} />
+          </div>
+        )
+      }}
+    >
       {content || ''}
     </ReactMarkdown>
   )

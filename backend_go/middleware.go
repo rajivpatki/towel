@@ -26,6 +26,9 @@ func (a *App) routes() http.Handler {
 
 	// Protected endpoints (require valid session)
 	mux.HandleFunc(a.config.APIPrefix+"/tools/gmail", a.requireAuth(a.handleGmailTools))
+	mux.HandleFunc(a.config.APIPrefix+"/development/email-sync/status", a.requireAuth(a.handleEmailSyncStatus))
+	mux.HandleFunc(a.config.APIPrefix+"/development/email-sync/query", a.requireAuth(a.handleEmailSyncQuery))
+	mux.HandleFunc(a.config.APIPrefix+"/development/email-sync/trigger", a.requireAuth(a.handleEmailSyncTrigger))
 	mux.HandleFunc(a.config.APIPrefix+"/chat", a.requireAuth(a.handleChat))
 	mux.HandleFunc(a.config.APIPrefix+"/chat/session", a.requireAuth(a.handleChatSession))
 	mux.HandleFunc(a.config.APIPrefix+"/chat/session/stop", a.requireAuth(a.handleChatSessionStop))

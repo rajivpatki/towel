@@ -8,6 +8,7 @@ const GmailConnect = lazy(() => import('./pages/setup/GmailConnect'))
 const LLMConfig = lazy(() => import('./pages/setup/LLMConfig'))
 const Chat = lazy(() => import('./pages/Chat'))
 const History = lazy(() => import('./pages/History'))
+const Development = lazy(() => import('./pages/Development'))
 const Preferences = lazy(() => import('./pages/Preferences'))
 const Settings = lazy(() => import('./pages/Settings'))
 
@@ -70,6 +71,7 @@ function AuthenticatedLayout({ status, onStatusChange }) {
           <Route path="/chat" element={<ChatWrapper status={status} />} />
           <Route path="/chat/:conversationId" element={<ChatWrapper status={status} />} />
           <Route path="/history" element={<History />} />
+          <Route path="/development" element={<Development initialSyncStatus={status?.email_sync} onStatusChange={onStatusChange} />} />
           <Route path="/personalise" element={<Preferences />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/preferences" element={<Navigate to="/personalise" replace />} />
