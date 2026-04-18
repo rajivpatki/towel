@@ -165,6 +165,20 @@ func (a *App) initDB() error {
 			PRIMARY KEY (message_id, filename, attachment_id),
 			FOREIGN KEY(message_id) REFERENCES synced_emails(message_id) ON DELETE CASCADE
 		);`,
+		`CREATE TABLE IF NOT EXISTS gmail_labels (
+			label_id TEXT PRIMARY KEY,
+			label_name TEXT NOT NULL,
+			label_type TEXT,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE VIEW IF NOT EXISTS synced_email_labels_with_names AS
+			SELECT
+				sel.message_id,
+				sel.label_id,
+				COALESCE(gl.label_name, sel.label_id) AS label_name,
+				gl.label_type
+			FROM synced_email_labels sel
+			LEFT JOIN gmail_labels gl ON sel.label_id = gl.label_id;`,
 		`CREATE INDEX IF NOT EXISTS idx_synced_emails_internal_date_unix ON synced_emails(internal_date_unix DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_synced_emails_thread_id ON synced_emails(thread_id);`,
 		`CREATE INDEX IF NOT EXISTS idx_synced_emails_from_email ON synced_emails(from_email);`,

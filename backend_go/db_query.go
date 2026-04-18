@@ -269,7 +269,8 @@ func (a *App) buildQueryDBToolDefinition() GmailToolDefinition {
 			"Query the local SQLite Gmail cache instead of calling Gmail APIs when cached data is sufficient.",
 			"The cache is populated by a full sync of roughly the last 30 days of mail using users.messages.list plus users.messages.get(format=full), then kept updated by incremental users.history.list(startHistoryId=...) syncs every 5 minutes and before freshness-sensitive chat requests; if Gmail returns history 404, the app falls back to a fresh 30-day full sync.",
 			"Current sync context: " + statusSummary + ".",
-			"Allowed tables: email_sync_state (sync cursor/freshness metadata), synced_emails (one row per cached Gmail message with headers, normalized subject, body text/html, labels JSON, attachment names JSON, sizes, sender and unsubscribe metadata), synced_email_labels (one row per message-label pair for SQL joins), synced_email_attachments (one row per attachment name with mime type and size metadata).",
+			"Allowed tables: email_sync_state (sync cursor/freshness metadata), synced_emails (one row per cached Gmail message with headers, normalized subject, body text/html, labels JSON, attachment names JSON, sizes, sender and unsubscribe metadata), synced_email_attachments (one row per attachment name with mime type and size metadata).",
+			"Allowed views: synced_email_labels_with_names (joins message-label pairs with human-readable label names - use this for label queries instead of raw tables).",
 			"Key synced_emails columns: message_id, thread_id, history_id, subject, subject_normalized, snippet, from_name, from_email, from_raw, reply_to, to_addresses, cc_addresses, bcc_addresses, delivered_to, date_header, internal_date_unix, internal_date, size_estimate, body_text, body_html, body_size_estimate, attachment_count, attachment_names, attachment_total_size, label_ids, list_unsubscribe, list_unsubscribe_post, list_id, precedence_header, auto_submitted_header, feedback_id, in_reply_to, references_header, is_unread, is_starred, is_important, is_in_inbox, is_in_spam, is_in_trash, has_attachments, is_deleted, deleted_at, sync_updated_at.",
 			"Keep queries read-only and relevant to the synced email cache. Prefer WHERE clauses and explicit LIMITs for large result sets.",
 		}, " "),
@@ -278,7 +279,7 @@ func (a *App) buildQueryDBToolDefinition() GmailToolDefinition {
 			"properties": map[string]any{
 				"sql": map[string]any{
 					"type":        "string",
-					"description": "A single read-only SQL query against email_sync_state, synced_emails, synced_email_labels, or synced_email_attachments.",
+					"description": "A single read-only SQL query against email_sync_state, synced_emails, synced_email_attachments, or synced_email_labels_with_names.",
 				},
 			},
 			"required":             []string{"sql"},

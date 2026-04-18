@@ -63,6 +63,16 @@ type gmailMessageListResponse struct {
 	NextPageToken string `json:"nextPageToken"`
 }
 
+type gmailLabel struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type gmailLabelsListResponse struct {
+	Labels []gmailLabel `json:"labels"`
+}
+
 type gmailHistoryListResponse struct {
 	History []struct {
 		ID            string `json:"id"`
@@ -193,6 +203,10 @@ func (a *App) doGmailJSONRequest(method string, apiPath string, params url.Value
 	}
 	log.Printf("gmail auth successful: api_path=%s", apiPath)
 	body, statusCode, err := execute(accessToken)
+	if err == nil && statusCode == http.StatusNotFound && strings.Contains(apiPath, "/history") {
+		log.Printf("gmail history 404 detected: api_path=%s status=%d", apiPath, statusCode)
+		return statusCode, errEmailHistoryExpired
+	}
 	if err == nil && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden) {
 		log.Printf("gmail request unauthorized/forbidden; attempting token refresh: api_path=%s status=%d", apiPath, statusCode)
 		refreshedToken, refreshErr := a.refreshGmailToken()
@@ -202,12 +216,13 @@ func (a *App) doGmailJSONRequest(method string, apiPath string, params url.Value
 		}
 		log.Printf("gmail token refresh successful: api_path=%s", apiPath)
 		body, statusCode, err = execute(refreshedToken)
+		if err == nil && statusCode == http.StatusNotFound && strings.Contains(apiPath, "/history") {
+			log.Printf("gmail history 404 detected after token refresh: api_path=%s status=%d", apiPath, statusCode)
+			return statusCode, errEmailHistoryExpired
+		}
 	}
 	if err != nil {
 		return statusCode, err
-	}
-	if statusCode == http.StatusNotFound && strings.Contains(apiPath, "/history") {
-		return statusCode, errEmailHistoryExpired
 	}
 	if statusCode >= 400 {
 		return statusCode, fmt.Errorf("gmail request failed: %s", strings.TrimSpace(string(body)))
@@ -287,6 +302,33 @@ func (a *App) fetchGmailMessage(messageID string) (gmailMessageResource, error) 
 		return gmailMessageResource{}, err
 	}
 	return message, nil
+}
+
+func (a *App) fetchAndCacheGmailLabels() error {
+	var response gmailLabelsListResponse
+	if _, err := a.doGmailJSONRequest(http.MethodGet, "/users/me/labels", nil, nil, &response); err != nil {
+		return err
+	}
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if _, err := tx.Exec(`DELETE FROM gmail_labels`); err != nil {
+		return err
+	}
+	for _, label := range response.Labels {
+		if _, err := tx.Exec(`INSERT INTO gmail_labels (label_id, label_name, label_type) VALUES (?, ?, ?)`, label.ID, label.Name, label.Type); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	log.Printf("gmail labels cached: count=%d", len(response.Labels))
+	return nil
 }
 
 func (a *App) listGmailHistoryChanges(cursor string) (historyChangeSet, string, error) {

@@ -201,6 +201,10 @@ func (a *App) runEmailSync(mode string, reason string) error {
 }
 
 func (a *App) performFullEmailSync() (emailSyncResult, error) {
+	log.Printf("email full sync: fetching gmail labels")
+	if err := a.fetchAndCacheGmailLabels(); err != nil {
+		log.Printf("email full sync: failed to fetch gmail labels (non-fatal): %v", err)
+	}
 	windowStart := time.Now().Add(-time.Duration(emailSyncRecentWindowDays) * 24 * time.Hour).UTC().Format(time.RFC3339)
 	log.Printf("email full sync running: fetching messages for dates between %s and %s", windowStart, time.Now().UTC().Format(time.RFC3339))
 	messageIDs, cursorHistoryID, err := a.syncRecentMessagesWindow(emailSyncRecentWindowDays)

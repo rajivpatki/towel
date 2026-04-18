@@ -312,8 +312,7 @@ func (a *App) callGeminiOnce(ctx context.Context, agent AgentDefinition, accessT
 			},
 		},
 		"generationConfig": map[string]any{
-			"temperature":     0.7,
-			"maxOutputTokens": 1000,
+			"temperature": 0.7,
 		},
 	}
 	body, err := json.Marshal(requestPayload)

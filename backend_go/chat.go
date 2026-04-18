@@ -239,13 +239,12 @@ func convertToolCalls(toolCalls []llmToolCall) []map[string]any {
 
 func (a *App) callLLMOnce(ctx context.Context, agent AgentDefinition, apiKey string, messages []map[string]any, tools []map[string]any) (llmResponseMessage, error) {
 	requestPayload := map[string]any{
-		"model":                 agent.Model,
-		"messages":              messages,
-		"temperature":           0.7,
-		"max_completion_tokens": 1000,
-		"tools":                 tools,
-		"tool_choice":           "auto",
-		"stream":                false,
+		"model":       agent.Model,
+		"messages":    messages,
+		"temperature": 0.7,
+		"tools":       tools,
+		"tool_choice": "auto",
+		"stream":      false,
 	}
 	body, err := json.Marshal(requestPayload)
 	if err != nil {
