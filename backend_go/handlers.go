@@ -536,6 +536,11 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		googleChat, err := a.buildGoogleChatSettingsOut()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		agents := make([]SettingsAgent, 0, len(agentDefinitions)+len(customAgents))
 		for _, agent := range agentDefinitions {
 			agents = append(agents, SettingsAgent{
@@ -567,6 +572,7 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			SelectedAgentID: state.SelectedAgentID,
 			HasAPIKey:       hasAPIKey,
 			Agents:          agents,
+			GoogleChat:      googleChat,
 		})
 	case http.MethodPost:
 		var payload SettingsIn
@@ -574,9 +580,9 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		if err := a.saveSettings(payload.SelectedAgentID, payload.APIKey, payload.Agents); err != nil {
+		if err := a.saveSettings(payload.SelectedAgentID, payload.APIKey, payload.Agents, payload.GoogleChat); err != nil {
 			statusCode := http.StatusInternalServerError
-			if strings.Contains(err.Error(), "Unsupported agent") {
+			if strings.Contains(err.Error(), "Unsupported agent") || strings.Contains(err.Error(), "google_chat.") || strings.Contains(strings.ToLower(err.Error()), "service account") {
 				statusCode = http.StatusBadRequest
 			}
 			writeError(w, statusCode, fmt.Sprintf("Failed to save settings: %v", err))
@@ -586,6 +592,36 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
+}
+
+func (a *App) handleGoogleChatStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	status, err := a.buildGoogleChatSettingsOut()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (a *App) handleGoogleChatRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	if err := a.restartGoogleChatListener(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	status, err := a.buildGoogleChatSettingsOut()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (a *App) buildSetupStatus() (SetupStatus, error) {

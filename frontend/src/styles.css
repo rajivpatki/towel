@@ -1020,6 +1020,12 @@ label span {
   color: var(--color-error);
 }
 
+.conversation-delete:active,
+.conversation-delete:focus {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .conversation-load-more {
   padding: 0.5rem 0.75rem;
   background: transparent;
@@ -2212,6 +2218,77 @@ label span {
   gap: 1rem;
 }
 
+.settings-google-chat-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.875rem;
+  flex-wrap: wrap;
+}
+
+.settings-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+  cursor: pointer;
+  user-select: none;
+}
+
+.settings-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.settings-toggle-track {
+  position: relative;
+  width: 2.75rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  transition: all var(--transition-fast);
+}
+
+.settings-toggle-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0.2rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.18);
+  transform: translate(0, -50%);
+  transition: transform var(--transition-fast);
+}
+
+.settings-toggle-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  min-width: 4.5rem;
+}
+
+.settings-toggle input:checked + .settings-toggle-track {
+  background: rgba(52, 199, 89, 0.2);
+  border-color: rgba(52, 199, 89, 0.35);
+}
+
+.settings-toggle input:checked + .settings-toggle-track .settings-toggle-thumb {
+  transform: translate(1.2rem, -50%);
+}
+
+.settings-toggle input:focus-visible + .settings-toggle-track {
+  outline: 2px solid rgba(37, 99, 235, 0.28);
+  outline-offset: 2px;
+}
+
 .settings-actions {
   justify-content: flex-end;
 }
@@ -2245,6 +2322,14 @@ label span {
   .settings-model-grid,
   .development-meta-grid {
     grid-template-columns: 1fr;
+  }
+
+  .settings-model-card-header {
+    align-items: stretch;
+  }
+
+  .settings-google-chat-actions {
+    justify-content: flex-start;
   }
 }
 

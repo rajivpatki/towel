@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -73,6 +74,14 @@ type emailEmbeddingStats struct {
 	Count    int
 	Provider string
 	Model    string
+}
+
+type emailEmbeddingRunRequest struct {
+	Reason            string
+	MessageIDs        []string
+	DeletedMessageIDs []string
+	Reset             bool
+	FullRescan        bool
 }
 
 type emailEmbeddingExistingState struct {
@@ -145,55 +154,180 @@ func (a *App) beginEmailEmbeddingRun() bool {
 	return true
 }
 
-func (a *App) endEmailEmbeddingRun() {
+func cloneStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make([]string, len(values))
+	copy(cloned, values)
+	return cloned
+}
+
+func appendUniqueStringSet(target map[string]struct{}, values []string) map[string]struct{} {
+	if len(values) == 0 {
+		return target
+	}
+	if target == nil {
+		target = make(map[string]struct{}, len(values))
+	}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		target[trimmed] = struct{}{}
+	}
+	return target
+}
+
+func sortedKeys(values map[string]struct{}) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(values))
+	for value := range values {
+		keys = append(keys, value)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (a *App) queuePendingEmailEmbeddingRun(request emailEmbeddingRunRequest) {
 	a.emailEmbeddingMu.Lock()
+	defer a.emailEmbeddingMu.Unlock()
+	a.emailEmbeddingPending = true
+	if strings.TrimSpace(request.Reason) != "" {
+		a.emailEmbeddingPendingReason = request.Reason
+	}
+	a.emailEmbeddingPendingReset = a.emailEmbeddingPendingReset || request.Reset
+	a.emailEmbeddingPendingFullRescan = a.emailEmbeddingPendingFullRescan || request.FullRescan
+	if !a.emailEmbeddingPendingFullRescan {
+		a.emailEmbeddingPendingMessageIDs = appendUniqueStringSet(a.emailEmbeddingPendingMessageIDs, request.MessageIDs)
+	}
+	a.emailEmbeddingPendingDeletedMessageIDs = appendUniqueStringSet(a.emailEmbeddingPendingDeletedMessageIDs, request.DeletedMessageIDs)
+}
+
+func (a *App) finishEmailEmbeddingRun() (emailEmbeddingRunRequest, bool) {
+	a.emailEmbeddingMu.Lock()
+	defer a.emailEmbeddingMu.Unlock()
 	a.emailEmbeddingRunning = false
-	a.emailEmbeddingMu.Unlock()
+	if !a.emailEmbeddingPending {
+		return emailEmbeddingRunRequest{}, false
+	}
+	request := emailEmbeddingRunRequest{
+		Reason:            strings.TrimSpace(a.emailEmbeddingPendingReason),
+		DeletedMessageIDs: sortedKeys(a.emailEmbeddingPendingDeletedMessageIDs),
+		Reset:             a.emailEmbeddingPendingReset,
+		FullRescan:        a.emailEmbeddingPendingFullRescan,
+	}
+	if !request.FullRescan {
+		request.MessageIDs = sortedKeys(a.emailEmbeddingPendingMessageIDs)
+	}
+	a.emailEmbeddingPending = false
+	a.emailEmbeddingPendingReason = ""
+	a.emailEmbeddingPendingReset = false
+	a.emailEmbeddingPendingFullRescan = false
+	a.emailEmbeddingPendingMessageIDs = nil
+	a.emailEmbeddingPendingDeletedMessageIDs = nil
+	return request, true
 }
 
 func (a *App) refreshEmailEmbeddingsInBackground(reason string, reset bool) {
+	a.refreshEmailEmbeddingRequestInBackground(emailEmbeddingRunRequest{
+		Reason:     reason,
+		Reset:      reset,
+		FullRescan: true,
+	})
+}
+
+func (a *App) refreshEmailEmbeddingsForMessageIDsInBackground(reason string, messageIDs []string, deletedMessageIDs []string) {
+	a.refreshEmailEmbeddingRequestInBackground(emailEmbeddingRunRequest{
+		Reason:            reason,
+		MessageIDs:        cloneStringSlice(messageIDs),
+		DeletedMessageIDs: cloneStringSlice(deletedMessageIDs),
+	})
+}
+
+func (a *App) refreshEmailEmbeddingRequestInBackground(request emailEmbeddingRunRequest) {
 	go func() {
-		if err := a.syncEmailEmbeddings(reason, nil, nil, reset); err != nil && !errors.Is(err, errEmailEmbeddingAlreadyRunning) {
-			log.Printf("email embedding refresh failed: reason=%s err=%v", reason, err)
+		if err := a.syncEmailEmbeddings(request); err != nil && !errors.Is(err, errEmailEmbeddingAlreadyRunning) {
+			log.Printf("email embedding error: async refresh failed: reason=%s reset=%t full_rescan=%t message_ids=%d deleted_message_ids=%d err=%v", request.Reason, request.Reset, request.FullRescan, len(request.MessageIDs), len(request.DeletedMessageIDs), err)
 		}
 	}()
 }
 
 func (a *App) syncEmailEmbeddingsForSyncResult(reason string, result emailSyncResult) error {
-	return a.syncEmailEmbeddings(reason, result.UpsertedMessageIDs, result.DeletedMessageIDs, false)
+	return a.syncEmailEmbeddings(emailEmbeddingRunRequest{
+		Reason:            reason,
+		MessageIDs:        cloneStringSlice(result.UpsertedMessageIDs),
+		DeletedMessageIDs: cloneStringSlice(result.DeletedMessageIDs),
+	})
 }
 
-func (a *App) syncEmailEmbeddings(reason string, messageIDs []string, deletedMessageIDs []string, reset bool) error {
+func (a *App) syncEmailEmbeddings(request emailEmbeddingRunRequest) error {
+	request.Reason = strings.TrimSpace(request.Reason)
+	request.MessageIDs = cloneStringSlice(request.MessageIDs)
+	request.DeletedMessageIDs = cloneStringSlice(request.DeletedMessageIDs)
+	if !request.FullRescan && !request.Reset && len(request.MessageIDs) == 0 && len(request.DeletedMessageIDs) == 0 {
+		return nil
+	}
 	if !a.beginEmailEmbeddingRun() {
+		a.queuePendingEmailEmbeddingRun(request)
+		log.Printf("email embedding warning: run already active; queued follow-up refresh: reason=%s reset=%t full_rescan=%t message_ids=%d deleted_message_ids=%d", request.Reason, request.Reset, request.FullRescan, len(request.MessageIDs), len(request.DeletedMessageIDs))
 		return errEmailEmbeddingAlreadyRunning
 	}
-	defer a.endEmailEmbeddingRun()
+	startedAt := time.Now()
+	outcome := "success"
+	defer func() {
+		nextRequest, hasPending := a.finishEmailEmbeddingRun()
+		log.Printf("email embedding stop: reason=%s outcome=%s duration=%s reset=%t full_rescan=%t message_ids=%d deleted_message_ids=%d", request.Reason, outcome, time.Since(startedAt).Round(time.Millisecond), request.Reset, request.FullRescan, len(request.MessageIDs), len(request.DeletedMessageIDs))
+		if hasPending {
+			log.Printf("email embedding warning: dispatching queued follow-up refresh: reason=%s reset=%t full_rescan=%t message_ids=%d deleted_message_ids=%d", nextRequest.Reason, nextRequest.Reset, nextRequest.FullRescan, len(nextRequest.MessageIDs), len(nextRequest.DeletedMessageIDs))
+			a.refreshEmailEmbeddingRequestInBackground(nextRequest)
+		}
+	}()
+	log.Printf("email embedding start: reason=%s reset=%t full_rescan=%t message_ids=%d deleted_message_ids=%d", request.Reason, request.Reset, request.FullRescan, len(request.MessageIDs), len(request.DeletedMessageIDs))
 
-	if reset {
+	if request.Reset {
 		if err := a.clearEmailEmbeddings(); err != nil {
+			outcome = "failure"
+			log.Printf("email embedding failure: reason=%s step=clear reset=%t full_rescan=%t err=%v", request.Reason, request.Reset, request.FullRescan, err)
 			return err
 		}
 	}
-	if len(deletedMessageIDs) > 0 {
-		if err := a.deleteEmailEmbeddingsByMessageIDs(deletedMessageIDs); err != nil {
+	if len(request.DeletedMessageIDs) > 0 {
+		if err := a.deleteEmailEmbeddingsByMessageIDs(request.DeletedMessageIDs); err != nil {
+			outcome = "failure"
+			log.Printf("email embedding failure: reason=%s step=delete deleted_message_ids=%d err=%v", request.Reason, len(request.DeletedMessageIDs), err)
 			return err
 		}
 	}
 
 	agent, config, credential, supported, err := a.resolveCurrentEmailEmbeddingConfig()
 	if err != nil {
+		outcome = "failure"
+		log.Printf("email embedding failure: reason=%s step=resolve_config err=%v", request.Reason, err)
 		return err
 	}
 	if !supported {
+		log.Printf("email embedding warning: unsupported provider for selected agent; cleaning orphaned index: reason=%s provider=%s", request.Reason, agent.Provider)
 		return a.cleanupOrphanedEmailEmbeddingIndex()
 	}
 
+	messageIDs := request.MessageIDs
+	if request.FullRescan {
+		messageIDs = nil
+	}
 	sources, err := a.listEmailEmbeddingSources(messageIDs)
 	if err != nil {
+		outcome = "failure"
+		log.Printf("email embedding failure: reason=%s step=list_sources message_ids=%d full_rescan=%t err=%v", request.Reason, len(messageIDs), request.FullRescan, err)
 		return err
 	}
 	existingStates, err := a.listExistingEmailEmbeddingStates(extractEmailEmbeddingSourceIDs(sources))
 	if err != nil {
+		outcome = "failure"
+		log.Printf("email embedding failure: reason=%s step=list_existing_states source_count=%d err=%v", request.Reason, len(sources), err)
 		return err
 	}
 	documents := make([]emailEmbeddingDocument, 0, len(sources))
@@ -201,6 +335,8 @@ func (a *App) syncEmailEmbeddings(reason string, messageIDs []string, deletedMes
 		document := buildEmailEmbeddingDocument(source)
 		if strings.TrimSpace(document.Text) == "" {
 			if err := a.deleteEmailEmbeddingsByMessageIDs([]string{source.MessageID}); err != nil {
+				outcome = "failure"
+				log.Printf("email embedding failure: reason=%s step=delete_empty_document_embeddings message_id=%s err=%v", request.Reason, source.MessageID, err)
 				return err
 			}
 			continue
@@ -215,10 +351,17 @@ func (a *App) syncEmailEmbeddings(reason string, messageIDs []string, deletedMes
 		documents = append(documents, document)
 	}
 	if len(documents) == 0 {
-		return a.cleanupOrphanedEmailEmbeddingIndex()
+		if err := a.cleanupOrphanedEmailEmbeddingIndex(); err != nil {
+			outcome = "failure"
+			log.Printf("email embedding failure: reason=%s step=cleanup_orphans_noop err=%v", request.Reason, err)
+			return err
+		}
+		log.Printf("email embedding success: reason=%s provider=%s model=%s source_count=%d indexed=0 deleted_message_ids=%d reset=%t full_rescan=%t", request.Reason, config.Provider, config.Model, len(sources), len(request.DeletedMessageIDs), request.Reset, request.FullRescan)
+		return nil
 	}
 
 	ctx := context.Background()
+	indexedCount := 0
 	for start := 0; start < len(documents); start += emailEmbeddingBatchSize {
 		end := start + emailEmbeddingBatchSize
 		if end > len(documents) {
@@ -233,17 +376,31 @@ func (a *App) syncEmailEmbeddings(reason string, messageIDs []string, deletedMes
 		}
 		vectors, err := a.embedTexts(ctx, agent, config, credential, texts, titles, "RETRIEVAL_DOCUMENT")
 		if err != nil {
+			outcome = "failure"
+			log.Printf("email embedding failure: reason=%s step=embed_texts provider=%s model=%s batch_start=%d batch_size=%d err=%v", request.Reason, config.Provider, config.Model, start, len(batch), err)
 			return err
 		}
 		if len(vectors) != len(batch) {
-			return fmt.Errorf("embedding provider returned %d vectors for %d inputs", len(vectors), len(batch))
-		}
-		if err := a.upsertEmailEmbeddingBatch(batch, vectors, config); err != nil {
+			err := fmt.Errorf("embedding provider returned %d vectors for %d inputs", len(vectors), len(batch))
+			outcome = "failure"
+			log.Printf("email embedding failure: reason=%s step=vector_count_mismatch provider=%s model=%s batch_start=%d batch_size=%d err=%v", request.Reason, config.Provider, config.Model, start, len(batch), err)
 			return err
 		}
+		if err := a.upsertEmailEmbeddingBatch(batch, vectors, config); err != nil {
+			outcome = "failure"
+			log.Printf("email embedding failure: reason=%s step=upsert_batch provider=%s model=%s batch_start=%d batch_size=%d err=%v", request.Reason, config.Provider, config.Model, start, len(batch), err)
+			return err
+		}
+		indexedCount += len(batch)
 	}
 
-	return a.cleanupOrphanedEmailEmbeddingIndex()
+	if err := a.cleanupOrphanedEmailEmbeddingIndex(); err != nil {
+		outcome = "failure"
+		log.Printf("email embedding failure: reason=%s step=cleanup_orphans provider=%s model=%s err=%v", request.Reason, config.Provider, config.Model, err)
+		return err
+	}
+	log.Printf("email embedding success: reason=%s provider=%s model=%s source_count=%d indexed=%d deleted_message_ids=%d reset=%t full_rescan=%t", request.Reason, config.Provider, config.Model, len(sources), indexedCount, len(request.DeletedMessageIDs), request.Reset, request.FullRescan)
+	return nil
 }
 
 func (a *App) listEmailEmbeddingSources(messageIDs []string) ([]emailEmbeddingSource, error) {

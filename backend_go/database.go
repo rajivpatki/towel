@@ -454,7 +454,7 @@ func (a *App) getCustomAgents() ([]AgentDefinition, error) {
 	return agents, rows.Err()
 }
 
-func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []SettingsAgentInput) error {
+func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []SettingsAgentInput, googleChat *GoogleChatSettingsIn) error {
 	if _, err := a.db.Exec(`DELETE FROM custom_agents`); err != nil {
 		return err
 	}
@@ -511,7 +511,10 @@ func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []Sett
 		}
 	}
 	_, _, err := a.refreshOnboardingState()
-	return err
+	if err != nil {
+		return err
+	}
+	return a.saveGoogleChatSettings(googleChat)
 }
 
 func (a *App) getAllPreferences() ([]PreferenceItem, error) {

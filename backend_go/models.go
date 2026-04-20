@@ -26,12 +26,31 @@ type App struct {
 	emailSyncMu      sync.Mutex
 	emailSyncRunning bool
 
-	emailEmbeddingMu      sync.Mutex
-	emailEmbeddingRunning bool
+	emailEmbeddingMu                       sync.Mutex
+	emailEmbeddingRunning                  bool
+	emailEmbeddingPending                  bool
+	emailEmbeddingPendingReason            string
+	emailEmbeddingPendingReset             bool
+	emailEmbeddingPendingFullRescan        bool
+	emailEmbeddingPendingMessageIDs        map[string]struct{}
+	emailEmbeddingPendingDeletedMessageIDs map[string]struct{}
+
+	googleChatMu     sync.Mutex
+	googleChatCancel context.CancelFunc
+	googleChatRunID  int64
+	googleChatState  GoogleChatRuntimeState
 
 	streamMu         sync.Mutex
 	streamSessions   map[string]*streamSession
 	nextSubscriberID int64
+}
+
+type GoogleChatRuntimeState struct {
+	Running       bool
+	LastError     string
+	LastEventType string
+	LastEventAt   string
+	LastReplyAt   string
 }
 
 type AgentDefinition struct {
@@ -129,9 +148,25 @@ type SettingsAgent struct {
 }
 
 type SettingsOut struct {
-	SelectedAgentID *string         `json:"selected_agent_id"`
-	HasAPIKey       bool            `json:"has_api_key"`
-	Agents          []SettingsAgent `json:"agents"`
+	SelectedAgentID *string               `json:"selected_agent_id"`
+	HasAPIKey       bool                  `json:"has_api_key"`
+	Agents          []SettingsAgent       `json:"agents"`
+	GoogleChat      GoogleChatSettingsOut `json:"google_chat"`
+}
+
+type GoogleChatSettingsOut struct {
+	Enabled               bool   `json:"enabled"`
+	Configured            bool   `json:"configured"`
+	Running               bool   `json:"running"`
+	ProjectID             string `json:"project_id"`
+	TopicID               string `json:"topic_id"`
+	SubscriptionID        string `json:"subscription_id"`
+	HasServiceAccountJSON bool   `json:"has_service_account_json"`
+	ServiceAccountEmail   string `json:"service_account_email,omitempty"`
+	LastError             string `json:"last_error,omitempty"`
+	LastEventType         string `json:"last_event_type,omitempty"`
+	LastEventAt           string `json:"last_event_at,omitempty"`
+	LastReplyAt           string `json:"last_reply_at,omitempty"`
 }
 
 type SettingsAgentInput struct {
@@ -146,9 +181,18 @@ type SettingsAgentInput struct {
 }
 
 type SettingsIn struct {
-	SelectedAgentID *string              `json:"selected_agent_id"`
-	APIKey          string               `json:"api_key"`
-	Agents          []SettingsAgentInput `json:"agents"`
+	SelectedAgentID *string               `json:"selected_agent_id"`
+	APIKey          string                `json:"api_key"`
+	Agents          []SettingsAgentInput  `json:"agents"`
+	GoogleChat      *GoogleChatSettingsIn `json:"google_chat,omitempty"`
+}
+
+type GoogleChatSettingsIn struct {
+	Enabled            bool   `json:"enabled"`
+	ProjectID          string `json:"project_id"`
+	TopicID            string `json:"topic_id"`
+	SubscriptionID     string `json:"subscription_id"`
+	ServiceAccountJSON string `json:"service_account_json"`
 }
 
 type ChatMessageIn struct {

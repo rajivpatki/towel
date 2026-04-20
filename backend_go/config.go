@@ -88,6 +88,9 @@ func newApp(config Config) (*App, error) {
 	appInstance = app
 	app.startEmailSyncLoop()
 	app.refreshEmailEmbeddingsInBackground("startup", false)
+	if err := app.restartGoogleChatListener(); err != nil {
+		log.Printf("google chat listener not started: %v", err)
+	}
 	return app, nil
 }
 

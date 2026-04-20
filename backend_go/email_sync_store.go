@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"mime"
 	"net/http"
 	"net/mail"
@@ -175,7 +174,6 @@ func (a *App) doGmailJSONRequest(method string, apiPath string, params url.Value
 		if len(params) > 0 {
 			requestURL += "?" + params.Encode()
 		}
-		log.Printf("gmail request starting: method=%s path=%s", method, requestURL)
 		var bodyReader *bytes.Reader
 		if requestBody == nil {
 			bodyReader = bytes.NewReader(nil)
@@ -192,35 +190,25 @@ func (a *App) doGmailJSONRequest(method string, apiPath string, params url.Value
 		}
 		body, statusCode, err := a.doGmailRequest(req)
 		if err != nil {
-			log.Printf("gmail request transport failed: method=%s path=%s err=%v", method, requestURL, err)
 			return body, statusCode, err
 		}
-		log.Printf("gmail request finished: method=%s path=%s status=%d", method, requestURL, statusCode)
 		return body, statusCode, nil
 	}
-	log.Printf("gmail auth: requesting access token for api_path=%s", apiPath)
 	accessToken, err := a.getGmailAccessToken()
 	if err != nil {
-		log.Printf("gmail auth failed: api_path=%s err=%v", apiPath, err)
 		return 0, err
 	}
-	log.Printf("gmail auth successful: api_path=%s", apiPath)
 	body, statusCode, err := execute(accessToken)
 	if err == nil && statusCode == http.StatusNotFound && strings.Contains(apiPath, "/history") {
-		log.Printf("gmail history 404 detected: api_path=%s status=%d", apiPath, statusCode)
 		return statusCode, errEmailHistoryExpired
 	}
 	if err == nil && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden) {
-		log.Printf("gmail request unauthorized/forbidden; attempting token refresh: api_path=%s status=%d", apiPath, statusCode)
 		refreshedToken, refreshErr := a.refreshGmailToken()
 		if refreshErr != nil {
-			log.Printf("gmail token refresh failed: api_path=%s err=%v", apiPath, refreshErr)
 			return statusCode, refreshErr
 		}
-		log.Printf("gmail token refresh successful: api_path=%s", apiPath)
 		body, statusCode, err = execute(refreshedToken)
 		if err == nil && statusCode == http.StatusNotFound && strings.Contains(apiPath, "/history") {
-			log.Printf("gmail history 404 detected after token refresh: api_path=%s status=%d", apiPath, statusCode)
 			return statusCode, errEmailHistoryExpired
 		}
 	}
@@ -241,11 +229,17 @@ func (a *App) doGmailJSONRequest(method string, apiPath string, params url.Value
 func (a *App) syncRecentMessagesWindow(windowDays int) ([]string, string, error) {
 	ids := make([]string, 0)
 	seen := make(map[string]struct{})
+	pendingEmbeddingMessageIDs := make([]string, 0, emailEmbeddingBatchSize)
 	cutoffUnixMillis := time.Now().Add(-time.Duration(windowDays) * 24 * time.Hour).UnixMilli()
-	log.Printf("email full sync listing recent messages: window_days=%d cutoff_unix_ms=%d cutoff_rfc3339=%s", windowDays, cutoffUnixMillis, time.UnixMilli(cutoffUnixMillis).UTC().Format(time.RFC3339))
 	pageToken := ""
-	pageNumber := 1
 	cursorHistoryID := ""
+	flushPendingEmbeddingMessages := func() {
+		if len(pendingEmbeddingMessageIDs) == 0 {
+			return
+		}
+		a.refreshEmailEmbeddingsForMessageIDsInBackground("email_sync_full_incremental", pendingEmbeddingMessageIDs, nil)
+		pendingEmbeddingMessageIDs = pendingEmbeddingMessageIDs[:0]
+	}
 	for {
 		params := url.Values{}
 		params.Set("includeSpamTrash", "true")
@@ -253,12 +247,10 @@ func (a *App) syncRecentMessagesWindow(windowDays int) ([]string, string, error)
 		if pageToken != "" {
 			params.Set("pageToken", pageToken)
 		}
-		log.Printf("email full sync listing page: page=%d page_token_present=%t", pageNumber, pageToken != "")
 		var response gmailMessageListResponse
 		if _, err := a.doGmailJSONRequest(http.MethodGet, "/users/me/messages", params, nil, &response); err != nil {
 			return nil, "", err
 		}
-		log.Printf("email full sync page loaded: page=%d candidates=%d next_page_token_present=%t", pageNumber, len(response.Messages), strings.TrimSpace(response.NextPageToken) != "")
 		pageHasRecentMessages := false
 		for _, message := range response.Messages {
 			if _, ok := seen[message.ID]; ok || strings.TrimSpace(message.ID) == "" {
@@ -270,7 +262,6 @@ func (a *App) syncRecentMessagesWindow(windowDays int) ([]string, string, error)
 			}
 			internalDateUnix, _ := strconv.ParseInt(strings.TrimSpace(fetchedMessage.InternalDate), 10, 64)
 			if internalDateUnix < cutoffUnixMillis {
-				log.Printf("email full sync skipping old message: message_id=%s internal_date=%s", fetchedMessage.ID, unixMillisToRFC3339(internalDateUnix))
 				continue
 			}
 			pageHasRecentMessages = true
@@ -282,18 +273,17 @@ func (a *App) syncRecentMessagesWindow(windowDays int) ([]string, string, error)
 			}
 			seen[fetchedMessage.ID] = struct{}{}
 			ids = append(ids, fetchedMessage.ID)
-			log.Printf("email full sync accepted and upserted message: message_id=%s internal_date=%s accepted_count=%d", fetchedMessage.ID, unixMillisToRFC3339(internalDateUnix), len(ids))
+			pendingEmbeddingMessageIDs = append(pendingEmbeddingMessageIDs, fetchedMessage.ID)
+			if len(pendingEmbeddingMessageIDs) >= emailEmbeddingBatchSize {
+				flushPendingEmbeddingMessages()
+			}
 		}
 		if strings.TrimSpace(response.NextPageToken) == "" || !pageHasRecentMessages {
-			if !pageHasRecentMessages {
-				log.Printf("email full sync stopping pagination: page=%d reason=no_recent_messages_on_page", pageNumber)
-			}
 			break
 		}
 		pageToken = response.NextPageToken
-		pageNumber++
 	}
-	log.Printf("email full sync listing completed: retained_ids=%d", len(ids))
+	flushPendingEmbeddingMessages()
 	return ids, cursorHistoryID, nil
 }
 
@@ -334,7 +324,6 @@ func (a *App) fetchAndCacheGmailLabels() error {
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	log.Printf("gmail labels cached: count=%d", len(response.Labels))
 	return nil
 }
 
@@ -558,18 +547,52 @@ func (a *App) markSyncedEmailDeleted(messageID string) error {
 	return tx.Commit()
 }
 
-func (a *App) pruneSyncedEmailsOutsideWindow(currentIDs []string) error {
+func (a *App) pruneSyncedEmailsOutsideWindow(currentIDs []string) ([]string, error) {
 	if len(currentIDs) == 0 {
-		_, err := a.db.Exec(`DELETE FROM synced_emails`)
-		return err
+		rows, err := a.db.Query(`SELECT message_id FROM synced_emails`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		deletedIDs := make([]string, 0)
+		for rows.Next() {
+			var messageID string
+			if err := rows.Scan(&messageID); err != nil {
+				return nil, err
+			}
+			deletedIDs = append(deletedIDs, messageID)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		_, err = a.db.Exec(`DELETE FROM synced_emails`)
+		return deletedIDs, err
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(currentIDs)), ",")
 	args := make([]any, 0, len(currentIDs))
 	for _, id := range currentIDs {
 		args = append(args, id)
 	}
-	_, err := a.db.Exec(`DELETE FROM synced_emails WHERE message_id NOT IN (`+placeholders+`)`, args...)
-	return err
+	rows, err := a.db.Query(`SELECT message_id FROM synced_emails WHERE message_id NOT IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	deletedIDs := make([]string, 0)
+	for rows.Next() {
+		var messageID string
+		if err := rows.Scan(&messageID); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		deletedIDs = append(deletedIDs, messageID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	_, err = a.db.Exec(`DELETE FROM synced_emails WHERE message_id NOT IN (`+placeholders+`)`, args...)
+	return deletedIDs, err
 }
 
 func (a *App) getEmailSyncMetrics() (emailSyncMetrics, error) {

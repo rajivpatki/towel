@@ -167,7 +167,6 @@ func (a *App) runEmailSync(mode string, reason string) error {
 	var result emailSyncResult
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "partial":
-		log.Printf("email sync resolving mode: requested=%s reason=%s", defaultString(strings.TrimSpace(mode), "partial"), reason)
 		status, statusErr := a.getEmailSyncStatus()
 		if statusErr != nil {
 			_ = a.markEmailSyncFailed("partial", statusErr)
@@ -175,20 +174,18 @@ func (a *App) runEmailSync(mode string, reason string) error {
 		}
 		cursor := strings.TrimSpace(status.SyncCursorHistoryID)
 		if cursor == "" {
-			log.Printf("email partial sync escalated to full: reason=%s mailbox has no history cursor", reason)
+			log.Printf("email sync warning: partial requested without history cursor; escalating to full sync: reason=%s mailbox=%s", reason, mailboxEmail)
 			result, err = a.performFullEmailSync()
 			mode = "full"
 		} else {
-			log.Printf("email partial sync starting: cursor=%s", cursor)
 			result, err = a.performPartialEmailSync(cursor)
 			if errors.Is(err, errEmailHistoryExpired) {
-				log.Printf("email partial sync cursor expired; retrying full sync: cursor=%s", cursor)
+				log.Printf("email sync warning: partial history cursor expired; retrying full sync: reason=%s mailbox=%s cursor=%s", reason, mailboxEmail, cursor)
 				result, err = a.performFullEmailSync()
 				mode = "full"
 			}
 		}
 	case "full":
-		log.Printf("email full sync requested explicitly: reason=%s", reason)
 		result, err = a.performFullEmailSync()
 	default:
 		err = fmt.Errorf("unsupported email sync mode: %s", mode)
@@ -202,28 +199,24 @@ func (a *App) runEmailSync(mode string, reason string) error {
 		return err
 	}
 	if err := a.syncEmailEmbeddingsForSyncResult("email_sync_"+mode, result); err != nil && !errors.Is(err, errEmailEmbeddingAlreadyRunning) {
-		log.Printf("email sync embeddings refresh failed: mode=%s reason=%s mailbox=%s err=%v", mode, reason, mailboxEmail, err)
+		log.Printf("email sync warning: embedding refresh failed after sync: mode=%s reason=%s mailbox=%s err=%v", mode, reason, mailboxEmail, err)
 	}
 	log.Printf("email sync completed: mode=%s reason=%s mailbox=%s messages=%d oldest=%s newest=%s cursor=%s", mode, reason, mailboxEmail, result.Metrics.MessageCount, result.Metrics.OldestMessageAt, result.Metrics.NewestMessageAt, result.CursorHistoryID)
 	return nil
 }
 
 func (a *App) performFullEmailSync() (emailSyncResult, error) {
-	log.Printf("email full sync: fetching gmail labels")
 	if err := a.fetchAndCacheGmailLabels(); err != nil {
-		log.Printf("email full sync: failed to fetch gmail labels (non-fatal): %v", err)
+		log.Printf("email sync warning: failed to refresh gmail labels during full sync: %v", err)
 	}
-	windowStart := time.Now().Add(-time.Duration(emailSyncRecentWindowDays) * 24 * time.Hour).UTC().Format(time.RFC3339)
-	log.Printf("email full sync running: fetching messages for dates between %s and %s", windowStart, time.Now().UTC().Format(time.RFC3339))
 	messageIDs, cursorHistoryID, err := a.syncRecentMessagesWindow(emailSyncRecentWindowDays)
 	if err != nil {
 		return emailSyncResult{}, err
 	}
-	log.Printf("email full sync enumerated candidate messages: count=%d", len(messageIDs))
-	if err := a.pruneSyncedEmailsOutsideWindow(messageIDs); err != nil {
+	deletedMessageIDs, err := a.pruneSyncedEmailsOutsideWindow(messageIDs)
+	if err != nil {
 		return emailSyncResult{}, err
 	}
-	log.Printf("email full sync prune successful: retained_messages=%d", len(messageIDs))
 	metrics, err := a.getEmailSyncMetrics()
 	if err != nil {
 		return emailSyncResult{}, err
@@ -233,6 +226,7 @@ func (a *App) performFullEmailSync() (emailSyncResult, error) {
 		LastHistoryID:      cursorHistoryID,
 		Metrics:            metrics,
 		UpsertedMessageIDs: append([]string(nil), messageIDs...),
+		DeletedMessageIDs:  append([]string(nil), deletedMessageIDs...),
 	}, nil
 }
 
@@ -240,18 +234,24 @@ func (a *App) performPartialEmailSync(cursor string) (emailSyncResult, error) {
 	if strings.TrimSpace(cursor) == "" {
 		return a.performFullEmailSync()
 	}
-	log.Printf("email partial sync running: start_history_id=%s", cursor)
 	changes, lastHistoryID, err := a.listGmailHistoryChanges(cursor)
 	if err != nil {
 		return emailSyncResult{}, err
 	}
-	log.Printf("email partial sync change set loaded: upserts=%d deletes=%d last_history_id=%s", len(changes.Upsert), len(changes.Deleted), lastHistoryID)
-	for _, messageID := range changes.UpsertIDs() {
-		log.Printf("email partial sync fetching changed message: message_id=%s", messageID)
+	pendingEmbeddingMessageIDs := make([]string, 0, emailEmbeddingBatchSize)
+	flushPendingEmbeddingMessages := func() {
+		if len(pendingEmbeddingMessageIDs) == 0 {
+			return
+		}
+		a.refreshEmailEmbeddingsForMessageIDsInBackground("email_sync_partial_incremental", pendingEmbeddingMessageIDs, nil)
+		pendingEmbeddingMessageIDs = pendingEmbeddingMessageIDs[:0]
+	}
+	upsertIDs := changes.UpsertIDs()
+	for _, messageID := range upsertIDs {
 		message, fetchErr := a.fetchGmailMessage(messageID)
 		if fetchErr != nil {
 			if errors.Is(fetchErr, errGmailMessageNotFound) {
-				log.Printf("email partial sync message missing during refetch; marking deleted: message_id=%s", messageID)
+				log.Printf("email sync warning: changed message missing during partial refetch; marking deleted: message_id=%s", messageID)
 				if err := a.markSyncedEmailDeleted(messageID); err != nil {
 					return emailSyncResult{}, err
 				}
@@ -260,15 +260,17 @@ func (a *App) performPartialEmailSync(cursor string) (emailSyncResult, error) {
 			}
 			return emailSyncResult{}, fetchErr
 		}
-		log.Printf("email partial sync fetch successful: message_id=%s internal_date=%s history_id=%s", message.ID, message.InternalDate, message.HistoryID)
 		if _, upsertErr := a.upsertSyncedEmail(message); upsertErr != nil {
 			return emailSyncResult{}, upsertErr
 		}
-		log.Printf("email partial sync upsert successful: message_id=%s", message.ID)
 		delete(changes.Deleted, messageID)
+		pendingEmbeddingMessageIDs = append(pendingEmbeddingMessageIDs, messageID)
+		if len(pendingEmbeddingMessageIDs) >= emailEmbeddingBatchSize {
+			flushPendingEmbeddingMessages()
+		}
 	}
+	flushPendingEmbeddingMessages()
 	for _, messageID := range changes.DeletedIDs() {
-		log.Printf("email partial sync marking deleted message: message_id=%s", messageID)
 		if err := a.markSyncedEmailDeleted(messageID); err != nil {
 			return emailSyncResult{}, err
 		}
@@ -284,7 +286,7 @@ func (a *App) performPartialEmailSync(cursor string) (emailSyncResult, error) {
 		CursorHistoryID:    lastHistoryID,
 		LastHistoryID:      lastHistoryID,
 		Metrics:            metrics,
-		UpsertedMessageIDs: changes.UpsertIDs(),
+		UpsertedMessageIDs: upsertIDs,
 		DeletedMessageIDs:  changes.DeletedIDs(),
 	}, nil
 }
