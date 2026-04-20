@@ -493,31 +493,6 @@ func (a *App) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, HistoryListOut{Items: items})
 }
 
-func (a *App) handlePreferences(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		preferences, err := a.getAllPreferences()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		writeJSON(w, http.StatusOK, PreferencesOut{Preferences: preferences})
-	case http.MethodPost:
-		var payload PreferencesIn
-		if err := decodeJSON(r, &payload); err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		if err := a.savePreferences(payload.Preferences); err != nil {
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to save preferences: %v", err))
-			return
-		}
-		writeJSON(w, http.StatusOK, SuccessResponse{Success: true})
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
-	}
-}
-
 func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

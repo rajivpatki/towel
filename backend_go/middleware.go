@@ -39,7 +39,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc(a.config.APIPrefix+"/chat/conversations", a.requireAuth(a.handleConversationList))
 	mux.HandleFunc(a.config.APIPrefix+"/chat/conversations/", a.requireAuth(a.handleConversationMessages))
 	mux.HandleFunc(a.config.APIPrefix+"/history", a.requireAuth(a.handleHistory))
-	mux.HandleFunc(a.config.APIPrefix+"/preferences", a.requireAuth(a.handlePreferences))
+	mux.HandleFunc(a.config.APIPrefix+"/memories", a.requireAuth(a.handleMemories))
+	mux.HandleFunc(a.config.APIPrefix+"/memories/", a.requireAuth(a.handleMemoryItem))
 	mux.HandleFunc(a.config.APIPrefix+"/settings", a.requireAuth(a.handleSettings))
 	mux.HandleFunc(a.config.APIPrefix+"/profile/image", a.requireAuth(a.handleProfileImage))
 	return a.withCORS(mux)
@@ -51,7 +52,7 @@ func (a *App) withCORS(next http.Handler) http.Handler {
 		if allowed := a.allowedOrigin(origin); allowed != "" {
 			w.Header().Set("Access-Control-Allow-Origin", allowed)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Last-Event-ID")
 			w.Header().Set("Vary", "Origin")
 		}

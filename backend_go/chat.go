@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-func buildChatSystemPrompt(preferences []PreferenceItem) string {
+func buildChatSystemPrompt() string {
 	prompt := strings.TrimSpace(`You are Towel, a Gmail assistant with capabilities to manage on behalf of the user.
 
 ## Objectives:
@@ -29,6 +29,14 @@ func buildChatSystemPrompt(preferences []PreferenceItem) string {
 - Never invent tool results.
 - If tool outputs are partial, stale, or unavailable, say so clearly and propose the next safest step.
 - Treat destructive actions as pseudo-actions under the Towel/ namespace.
+
+## Memory policy:
+- Use search_memories when user-specific preferences, communication style, standing constraints, recurring workflows, or long-running context may matter for the current reply.
+- Do not search or write memories on every turn. Create a memory only after the conversation has progressed enough to reveal a strong, durable, high-signal user preference or fact that is likely to help in future conversations.
+- Use create_memory only for stable information such as response preferences, recurring priorities, durable constraints, identity facts, or standing workflow choices.
+- Do not store one-off requests, speculative inferences, mailbox content, secrets, access tokens, or sensitive data unless the user explicitly asked for that information to be remembered.
+- If there is a reasonable chance the memory already exists, search first before creating a new one.
+- After a successful create_memory call, briefly state in your assistant message that you saved that preference or fact as a memory. This keeps the thread history explicit so later turns can see that the memory was already captured.
 
 ## Response style:
 - Respond concisely, directly, and without sycophantic language or exclamations.
@@ -50,21 +58,7 @@ func buildChatSystemPrompt(preferences []PreferenceItem) string {
 	if mdContent, err := os.ReadFile("tool_definition_helpers/gmail_search_operations.md"); err == nil {
 		prompt += "\n\n" + string(mdContent)
 	}
-	if len(preferences) == 0 {
-		return prompt
-	}
-	lines := make([]string, 0, len(preferences))
-	for _, pref := range preferences {
-		value := strings.TrimSpace(pref.Value)
-		if value == "" {
-			continue
-		}
-		lines = append(lines, "- "+value)
-	}
-	if len(lines) == 0 {
-		return prompt
-	}
-	return prompt + "\n\nPERSONALISED USER INSTRUCTIONS:\n" + strings.Join(lines, "\n")
+	return prompt
 }
 
 func (a *App) processChatMessage(ctx context.Context, conversationID string, userMessage string, emitProgress func(string, []string)) (ChatMessageOut, error) {
@@ -86,10 +80,6 @@ func (a *App) processChatMessage(ctx context.Context, conversationID string, use
 	if err != nil {
 		return ChatMessageOut{}, err
 	}
-	preferences, err := a.getAllPreferences()
-	if err != nil {
-		return ChatMessageOut{}, err
-	}
 	a.maybeSyncEmailsBeforeChat(userMessage)
 
 	if err := a.ensureConversation(conversationID); err != nil {
@@ -104,7 +94,7 @@ func (a *App) processChatMessage(ctx context.Context, conversationID string, use
 		return ChatMessageOut{}, err
 	}
 
-	systemPrompt := buildChatSystemPrompt(preferences)
+	systemPrompt := buildChatSystemPrompt()
 	assistantMessage := ""
 	actions := make([]string, 0)
 	if agentUsesGoogleOAuth(agent) {
@@ -373,6 +363,10 @@ func (a *App) executeToolCall(call llmToolCall) (string, string, string) {
 		resultJSON, execErr = a.executeQueryDBTool(arguments)
 	} else if toolName == "semantic_email_search" {
 		resultJSON, execErr = a.executeSemanticEmailSearchTool(arguments)
+	} else if toolName == "create_memory" {
+		resultJSON, execErr = a.executeCreateMemoryTool(arguments)
+	} else if toolName == "search_memories" {
+		resultJSON, execErr = a.executeSearchMemoriesTool(arguments)
 	}
 
 	if execErr != nil {

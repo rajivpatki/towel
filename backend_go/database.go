@@ -36,9 +36,8 @@ func (a *App) initDB() error {
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
-		`CREATE TABLE IF NOT EXISTS preferences (
+		`CREATE TABLE IF NOT EXISTS memories (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			title TEXT NOT NULL,
 			content TEXT NOT NULL,
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -206,6 +205,26 @@ func (a *App) initDB() error {
 			+message_id text,
 			+thread_id text,
 			+subject text,
+			+embedding_text text
+		);`,
+		`CREATE TABLE IF NOT EXISTS memory_embeddings (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			memory_id INTEGER NOT NULL UNIQUE,
+			embedding_text TEXT NOT NULL,
+			source_fingerprint TEXT,
+			embedding_vector TEXT NOT NULL,
+			embedding_provider TEXT NOT NULL,
+			embedding_model TEXT NOT NULL,
+			embedding_dimensions INTEGER NOT NULL,
+			indexed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE
+		);`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_embeddings_memory_id ON memory_embeddings(memory_id);`,
+		`CREATE VIRTUAL TABLE IF NOT EXISTS memory_embedding_index USING vec0(
+			embedding_id integer primary key,
+			embedding_vector float[768] distance_metric=cosine,
+			+memory_id integer,
 			+embedding_text text
 		);`,
 		`CREATE VIEW IF NOT EXISTS synced_email_labels_with_names AS
@@ -416,6 +435,7 @@ func (a *App) saveSelectedAgent(agent AgentDefinition) error {
 		previousEmbeddingConfig.Model != nextEmbeddingConfig.Model ||
 		previousEmbeddingConfig.Dimensions != nextEmbeddingConfig.Dimensions {
 		a.refreshEmailEmbeddingsInBackground("selected_agent_changed", true)
+		a.refreshMemoryEmbeddingsInBackground("selected_agent_changed", true)
 	}
 	return nil
 }
@@ -515,25 +535,6 @@ func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []Sett
 	return a.saveGoogleChatSettings(googleChat)
 }
 
-func (a *App) getAllPreferences() ([]PreferenceItem, error) {
-	rows, err := a.db.Query(`SELECT id, title, content, created_at, updated_at FROM preferences ORDER BY created_at`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]PreferenceItem, 0)
-	for rows.Next() {
-		var item PreferenceItem
-		var title sql.NullString
-		if err := rows.Scan(&item.ID, &title, &item.Value, &item.CreatedAt, &item.UpdatedAt); err != nil {
-			return nil, err
-		}
-		item.Label = title.String
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
 func (a *App) logActionHistory(actionType string, summary string, payload string) error {
 	actionType = normalizeHistoryActionType(actionType)
 	if actionType == "" {
@@ -571,58 +572,6 @@ func normalizeHistoryActionType(actionType string) string {
 	default:
 		return ""
 	}
-}
-
-func (a *App) savePreferences(preferences []PreferenceInput) error {
-	existingRows, err := a.db.Query(`SELECT id FROM preferences`)
-	if err != nil {
-		return err
-	}
-	defer existingRows.Close()
-	existingIDs := make(map[int64]struct{})
-	for existingRows.Next() {
-		var id int64
-		if err := existingRows.Scan(&id); err != nil {
-			return err
-		}
-		existingIDs[id] = struct{}{}
-	}
-	if err := existingRows.Err(); err != nil {
-		return err
-	}
-	incomingIDs := make(map[int64]struct{})
-	for _, pref := range preferences {
-		if pref.ID != nil && *pref.ID != 0 {
-			incomingIDs[*pref.ID] = struct{}{}
-		}
-	}
-	for id := range existingIDs {
-		if _, ok := incomingIDs[id]; ok {
-			continue
-		}
-		if _, err := a.db.Exec(`DELETE FROM preferences WHERE id = ?`, id); err != nil {
-			return err
-		}
-	}
-	for _, pref := range preferences {
-		value := strings.TrimSpace(pref.Value)
-		if value == "" {
-			continue
-		}
-		title := truncateString(value, 100)
-		if pref.ID != nil {
-			if _, ok := existingIDs[*pref.ID]; ok {
-				if _, err := a.db.Exec(`UPDATE preferences SET title = ?, content = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, title, value, *pref.ID); err != nil {
-					return err
-				}
-				continue
-			}
-		}
-		if _, err := a.db.Exec(`INSERT INTO preferences (title, content) VALUES (?, ?)`, title, value); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 func (a *App) getActionHistory(limit int) ([]HistoryItem, error) {

@@ -231,7 +231,7 @@ func validateSafeDBQuery(rawSQL string) error {
 		return fmt.Errorf("only read-only SELECT, WITH, PRAGMA, or EXPLAIN queries are allowed")
 	}
 	lower := strings.ToLower(value)
-	for _, forbidden := range []string{"insert ", "update ", "delete ", "drop ", "alter ", "create ", "replace ", "attach ", "detach ", "vacuum ", "reindex ", "begin ", "commit ", "rollback ", "secret_records", "user_sessions", "conversation_messages", "conversations", "custom_agents", "preferences", "setup_state"} {
+	for _, forbidden := range []string{"insert ", "update ", "delete ", "drop ", "alter ", "create ", "replace ", "attach ", "detach ", "vacuum ", "reindex ", "begin ", "commit ", "rollback ", "secret_records", "user_sessions", "conversation_messages", "conversations", "custom_agents", "preferences", "memories", "memory_embeddings", "memory_embedding_index", "setup_state"} {
 		if strings.Contains(lower, forbidden) {
 			return fmt.Errorf("query contains a forbidden keyword or table reference: %s", strings.TrimSpace(forbidden))
 		}
@@ -256,12 +256,14 @@ func normalizeSQLValue(value any) any {
 }
 
 func (a *App) allToolDefinitions() []GmailToolDefinition {
-	definitions := make([]GmailToolDefinition, 0, len(gmailToolDefinitions)+2)
+	definitions := make([]GmailToolDefinition, 0, len(gmailToolDefinitions)+4)
 	definitions = append(definitions, gmailToolDefinitions...)
 	if semanticTool, ok := a.buildSemanticEmailSearchToolDefinition(); ok {
 		definitions = append(definitions, semanticTool)
 	}
 	definitions = append(definitions, a.buildQueryDBToolDefinition())
+	definitions = append(definitions, buildCreateMemoryToolDefinition())
+	definitions = append(definitions, a.buildSearchMemoriesToolDefinition())
 	return definitions
 }
 
@@ -269,8 +271,10 @@ func allToolDefinitionsSnapshot() []GmailToolDefinition {
 	if appInstance != nil {
 		return appInstance.allToolDefinitions()
 	}
-	definitions := make([]GmailToolDefinition, 0, len(gmailToolDefinitions)+1)
+	definitions := make([]GmailToolDefinition, 0, len(gmailToolDefinitions)+3)
 	definitions = append(definitions, gmailToolDefinitions...)
+	definitions = append(definitions, buildCreateMemoryToolDefinition())
+	definitions = append(definitions, buildStaticSearchMemoriesToolDefinition())
 	return definitions
 }
 

@@ -35,6 +35,15 @@ type App struct {
 	emailEmbeddingPendingMessageIDs        map[string]struct{}
 	emailEmbeddingPendingDeletedMessageIDs map[string]struct{}
 
+	memoryEmbeddingMu                sync.Mutex
+	memoryEmbeddingRunning           bool
+	memoryEmbeddingPending           bool
+	memoryEmbeddingPendingReason     string
+	memoryEmbeddingPendingReset      bool
+	memoryEmbeddingPendingFullRescan bool
+	memoryEmbeddingPendingMemoryIDs  map[int64]struct{}
+	memoryEmbeddingPendingDeletedIDs map[int64]struct{}
+
 	googleChatMu     sync.Mutex
 	googleChatCancel context.CancelFunc
 	googleChatRunID  int64
@@ -252,25 +261,40 @@ type HistoryListOut struct {
 	Items []HistoryItem `json:"items"`
 }
 
-type PreferenceItem struct {
+type MemoryItem struct {
 	ID        int64  `json:"id"`
-	Label     string `json:"label"`
-	Value     string `json:"value"`
+	Text      string `json:"text"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
 
-type PreferencesOut struct {
-	Preferences []PreferenceItem `json:"preferences"`
+type MemoriesOut struct {
+	Memories []MemoryItem `json:"memories"`
+	Page     int          `json:"page"`
+	PageSize int          `json:"page_size"`
+	HasMore  bool         `json:"has_more"`
+	Query    string       `json:"query,omitempty"`
 }
 
-type PreferenceInput struct {
-	ID    *int64 `json:"id"`
-	Value string `json:"value"`
+type MemoryCreateIn struct {
+	Text string `json:"text"`
 }
 
-type PreferencesIn struct {
-	Preferences []PreferenceInput `json:"preferences"`
+type MemoryUpdateIn struct {
+	Text string `json:"text"`
+}
+
+type MemoryDeleteIn struct {
+	IDs []int64 `json:"ids"`
+}
+
+type MemoryOut struct {
+	Memory MemoryItem `json:"memory"`
+}
+
+type MemoryDeleteOut struct {
+	Success bool  `json:"success"`
+	Deleted int64 `json:"deleted"`
 }
 
 type errorResponse struct {
