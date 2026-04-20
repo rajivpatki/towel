@@ -1,15 +1,28 @@
 package main
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	sqliteDriver "modernc.org/sqlite"
 )
+
+const (
+	sqliteBusyTimeoutMillis = 10000
+	sqliteMaxOpenConns      = 8
+)
+
+var sqliteConnectionHookOnce sync.Once
 
 func loadConfig() Config {
 	databaseURL := envOrDefault("DATABASE_URL", "sqlite+aiosqlite:////data/towel.db")
@@ -69,10 +82,13 @@ func newApp(config Config) (*App, error) {
 	if err := os.MkdirAll(filepath.Dir(config.DatabasePath), 0o755); err != nil {
 		return nil, err
 	}
+	registerSQLiteConnectionHook()
 	db, err := sql.Open("sqlite", config.DatabasePath)
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(sqliteMaxOpenConns)
+	db.SetMaxIdleConns(sqliteMaxOpenConns)
 	app := &App{
 		config: config,
 		db:     db,
@@ -92,6 +108,29 @@ func newApp(config Config) (*App, error) {
 		log.Printf("google chat listener not started: %v", err)
 	}
 	return app, nil
+}
+
+func registerSQLiteConnectionHook() {
+	sqliteConnectionHookOnce.Do(func() {
+		sqliteDriver.RegisterConnectionHook(func(conn sqliteDriver.ExecQuerierContext, dsn string) error {
+			return configureSQLiteConnection(conn)
+		})
+	})
+}
+
+func configureSQLiteConnection(conn sqliteDriver.ExecQuerierContext) error {
+	busyTimeout := strconv.Itoa(sqliteBusyTimeoutMillis)
+	for _, pragma := range []string{
+		`PRAGMA foreign_keys = ON;`,
+		`PRAGMA busy_timeout = ` + busyTimeout + `;`,
+		`PRAGMA journal_mode = WAL;`,
+		`PRAGMA synchronous = NORMAL;`,
+	} {
+		if _, err := conn.ExecContext(context.Background(), pragma, []driver.NamedValue{}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func main() {

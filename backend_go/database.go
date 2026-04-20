@@ -15,8 +15,6 @@ import (
 
 func (a *App) initDB() error {
 	statements := []string{
-		`PRAGMA foreign_keys = ON;`,
-		`PRAGMA busy_timeout = 5000;`,
 		`CREATE TABLE IF NOT EXISTS setup_state (
 			id INTEGER PRIMARY KEY,
 			google_client_configured INTEGER NOT NULL DEFAULT 0,
