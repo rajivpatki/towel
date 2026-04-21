@@ -72,7 +72,6 @@ function Chat({ urlConversationId = '', status }) {
   const messagesEndRef = useRef(null)
   const streamUnsubscribeRef = useRef(null)
   const textareaRef = useRef(null)
-  const streamingRef = useRef(false)
 
   const profilePicture = status?.google_account_connected ? `${apiBaseUrl}/api/profile/image` : ''
 
@@ -89,11 +88,6 @@ function Chat({ urlConversationId = '', status }) {
     setConversationId(urlConversationId)
   }, [urlConversationId])
 
-  // Sync streamingRef with busy state for use in event listeners
-  useEffect(() => {
-    streamingRef.current = busy
-  }, [busy])
-
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
@@ -101,9 +95,9 @@ function Chat({ urlConversationId = '', status }) {
   // Handle new chat event from sidebar
   useEffect(() => {
     const handleNewChat = () => {
-      // Don't clear messages if we're actively streaming - let the stream finish
-      if (streamingRef.current) {
-        return
+      if (streamUnsubscribeRef.current) {
+        streamUnsubscribeRef.current()
+        streamUnsubscribeRef.current = null
       }
       setBusy(false)
       setInput('')
@@ -121,6 +115,7 @@ function Chat({ urlConversationId = '', status }) {
 
   useEffect(() => {
     if (!conversationId) {
+      setBusy(false)
       setMessages([])
       return
     }

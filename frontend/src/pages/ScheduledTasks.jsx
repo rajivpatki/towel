@@ -95,7 +95,6 @@ function buildScheduledTasksUrl(query, page) {
   const url = new URL('/api/scheduled-tasks', apiBaseUrl)
   if (query) {
     url.searchParams.set('q', query)
-    return url.toString()
   }
   url.searchParams.set('page', String(page))
   url.searchParams.set('page_size', String(scheduledTaskPageSize))
@@ -204,7 +203,7 @@ function ScheduledTasks() {
         return [...previous, ...nextTasks.filter((task) => !existing.has(task.id))]
       })
       setCurrentPage(Number.isFinite(data.page) && data.page > 0 ? data.page : page)
-      setHasMore(Boolean(data.has_more) && !query)
+      setHasMore(Boolean(data.has_more))
     } catch (err) {
       if (requestId === requestIdRef.current) {
         showToast({
@@ -246,7 +245,7 @@ function ScheduledTasks() {
   }, [searchQuery])
 
   useEffect(() => {
-    if (searchQuery || !hasMore || loading || loadingMore) {
+    if (searchInput.trim() || !hasMore || loading || loadingMore) {
       return
     }
     const node = loadMoreRef.current
@@ -259,12 +258,12 @@ function ScheduledTasks() {
       if (!entry?.isIntersecting || loadingMoreRef.current) {
         return
       }
-      loadTasks({ query: '', page: currentPage + 1, append: true })
+      loadTasks({ query: searchQuery, page: currentPage + 1, append: true })
     }, { rootMargin: '220px 0px 220px 0px' })
 
     observer.observe(node)
     return () => observer.disconnect()
-  }, [currentPage, hasMore, loading, loadingMore, searchQuery])
+  }, [currentPage, hasMore, loading, loadingMore, searchInput, searchQuery])
 
   function beginEdit(task) {
     setEditingId(task.id)
@@ -635,7 +634,7 @@ function ScheduledTasks() {
         )}
       </div>
 
-      {!searchQuery ? (
+      {hasMore || loadingMore ? (
         <div ref={loadMoreRef} className="memory-load-more-anchor" aria-hidden="true">
           {loadingMore ? <span className="memory-load-more-text">Loading more...</span> : null}
         </div>

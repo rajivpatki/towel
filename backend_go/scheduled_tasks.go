@@ -14,12 +14,12 @@ import (
 )
 
 const (
-	scheduledTaskTitleMaxChars         = 200
-	scheduledTaskInstructionMaxChars   = 8000
-	scheduledTaskListPageSizeDefault   = 50
-	scheduledTaskListPageSizeMax       = 50
-	scheduledTaskRunTimeout            = 2 * time.Minute
-	scheduledTaskToolSearchResultLimit = 20
+	scheduledTaskTitleMaxChars       = 200
+	scheduledTaskInstructionMaxChars = 8000
+	scheduledTaskListPageSizeDefault = 50
+	scheduledTaskListPageSizeMax     = 50
+	scheduledTaskRunTimeout          = 2 * time.Minute
+	scheduledTaskToolPageSize        = 10
 )
 
 type ScheduledTaskItem struct {
@@ -372,6 +372,69 @@ func (a *App) searchScheduledTaskItems(query string) ([]ScheduledTaskItem, error
 	return items, rows.Err()
 }
 
+func (a *App) searchScheduledTaskItemsPage(query string, page int, pageSize int) ([]ScheduledTaskItem, bool, error) {
+	if page <= 0 {
+		page = 1
+	}
+	if pageSize <= 0 {
+		pageSize = scheduledTaskToolPageSize
+	}
+	offset := (page - 1) * pageSize
+	tokens := tokenizeScheduledTaskSearchQuery(query)
+	if len(tokens) == 0 {
+		return a.listScheduledTasks(page, pageSize)
+	}
+	baseQuery := `
+		SELECT
+			id,
+			title,
+			instruction,
+			enabled,
+			require_in_inbox,
+			COALESCE(label_names_json, ''),
+			COALESCE(last_run_started_at, ''),
+			COALESCE(last_run_completed_at, ''),
+			COALESCE(last_run_status, ''),
+			COALESCE(last_run_message, ''),
+			COALESCE(last_run_error, ''),
+			COALESCE(last_run_matched_messages, 0),
+			COALESCE(last_run_history_start_id, ''),
+			COALESCE(last_run_history_end_id, ''),
+			created_at,
+			updated_at
+		FROM scheduled_tasks
+		WHERE `
+	conditions := make([]string, 0, len(tokens))
+	args := make([]any, 0, len(tokens)*3+2)
+	for _, token := range tokens {
+		like := "%" + token + "%"
+		conditions = append(conditions, `(LOWER(title) LIKE ? OR LOWER(instruction) LIKE ? OR LOWER(COALESCE(label_names_search_text, '')) LIKE ?)`)
+		args = append(args, like, like, like)
+	}
+	args = append(args, pageSize+1, offset)
+	rows, err := a.db.Query(baseQuery+strings.Join(conditions, ` AND `)+` ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	items := make([]ScheduledTaskItem, 0)
+	for rows.Next() {
+		item, err := scanScheduledTaskItem(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(items) > pageSize
+	if hasMore {
+		items = items[:pageSize]
+	}
+	return items, hasMore, nil
+}
+
 func (a *App) createScheduledTask(title string, instruction string, enabled bool, requireInInbox bool, labelNames []string, reason string) (ScheduledTaskItem, error) {
 	normalizedTitle := normalizeScheduledTaskTitle(title)
 	normalizedInstruction := normalizeScheduledTaskInstruction(instruction)
@@ -552,19 +615,25 @@ func buildSearchScheduledTasksToolDefinition() GmailToolDefinition {
 		SafetyModel:  "read_only",
 		Description: strings.Join([]string{
 			"Keyword-search scheduled tasks to inspect existing automation before creating or changing one.",
+			"Passing an empty query lists all scheduled tasks.",
 			"Search is basic keyword matching only, not semantic search.",
-			fmt.Sprintf("Matches task title, instruction, and configured label names; returns at most %d tasks.", scheduledTaskToolSearchResultLimit),
+			fmt.Sprintf("Matches task title, instruction, and configured label names; results are paginated with a fixed page size of %d.", scheduledTaskToolPageSize),
 		}, " "),
 		Parameters: gmailObjectSchema(
-			"Parameters for `search_scheduled_tasks`. Use short keywords, task names, or label names.",
+			fmt.Sprintf("Parameters for `search_scheduled_tasks`. Use short keywords, task names, or label names. Set `query` to an empty string to list all scheduled tasks. Results always use page size %d.", scheduledTaskToolPageSize),
 			map[string]any{
 				"query": gmailStringSchema(gmailDescription(
-					"Basic keyword query. Every keyword must match somewhere in the task title, instruction, or label names.",
+					"Basic keyword query. Every keyword must match somewhere in the task title, instruction, or label names. Use an empty string to list all tasks.",
 					`{"query":"recruiter inbox"}`,
 					`{"query":"invoice finance"}`,
+					`{"query":"","page":1}`,
+				)),
+				"page": gmailIntegerSchema(gmailDescription(
+					fmt.Sprintf("1-based results page. Omit to use page 1. Each page returns up to %d tasks.", scheduledTaskToolPageSize),
+					`{"query":"recruiter inbox","page":2}`,
+					`{"query":"","page":3}`,
 				)),
 			},
-			"query",
 		),
 	}
 }
@@ -589,20 +658,27 @@ func buildDeleteScheduledTaskToolDefinition() GmailToolDefinition {
 	}
 }
 
-func (a *App) searchScheduledTasks(query string) (map[string]any, error) {
-	items, err := a.searchScheduledTaskItems(query)
+func (a *App) searchScheduledTasks(query string, page int) (map[string]any, error) {
+	if page <= 0 {
+		page = 1
+	}
+	items, hasMore, err := a.searchScheduledTaskItemsPage(query, page, scheduledTaskToolPageSize)
 	if err != nil {
 		return nil, err
 	}
-	if len(items) > scheduledTaskToolSearchResultLimit {
-		items = items[:scheduledTaskToolSearchResultLimit]
+	searchMode := "basic_keyword"
+	if cleanWhitespace(query) == "" {
+		searchMode = "list_all"
 	}
 	return map[string]any{
 		"ok":           true,
 		"tool":         "search_scheduled_tasks",
 		"query":        cleanWhitespace(query),
-		"search_mode":  "basic_keyword",
+		"search_mode":  searchMode,
 		"query_fields": []string{"title", "instruction", "label_names"},
+		"page":         page,
+		"page_size":    scheduledTaskToolPageSize,
+		"has_more":     hasMore,
 		"result_count": len(items),
 		"results":      items,
 	}, nil
@@ -695,7 +771,11 @@ func (a *App) executeUpdateScheduledTaskTool(arguments map[string]any) (string, 
 
 func (a *App) executeSearchScheduledTasksTool(arguments map[string]any) (string, error) {
 	query := strings.TrimSpace(stringArgument(arguments["query"]))
-	payload, err := a.searchScheduledTasks(query)
+	page, ok := optionalInt64Argument(arguments["page"])
+	if !ok || page <= 0 {
+		page = 1
+	}
+	payload, err := a.searchScheduledTasks(query, int(page))
 	if err != nil {
 		return "", err
 	}
@@ -731,26 +811,11 @@ func (a *App) handleScheduledTasks(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		query := strings.TrimSpace(r.URL.Query().Get("q"))
-		if query != "" {
-			items, err := a.searchScheduledTaskItems(query)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			writeJSON(w, http.StatusOK, ScheduledTasksOut{
-				Tasks:    items,
-				Page:     1,
-				PageSize: len(items),
-				HasMore:  false,
-				Query:    query,
-			})
-			return
-		}
 		page := parsePositiveIntQuery(r.URL.Query().Get("page"), 1)
 		pageSize := clampScheduledTaskPageSize(parsePositiveIntQuery(r.URL.Query().Get("page_size"), scheduledTaskListPageSizeDefault))
-		items, hasMore, err := a.listScheduledTasks(page, pageSize)
+		items, hasMore, err := a.searchScheduledTaskItemsPage(query, page, pageSize)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		writeJSON(w, http.StatusOK, ScheduledTasksOut{
@@ -758,6 +823,7 @@ func (a *App) handleScheduledTasks(w http.ResponseWriter, r *http.Request) {
 			Page:     page,
 			PageSize: pageSize,
 			HasMore:  hasMore,
+			Query:    query,
 		})
 	case http.MethodPost:
 		var payload ScheduledTaskCreateIn

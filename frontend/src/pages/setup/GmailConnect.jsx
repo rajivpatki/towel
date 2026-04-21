@@ -174,7 +174,7 @@ function GmailConnect({ onStatusChange }) {
               For Gmail access to work, add your Gmail address as a test user:
             </p>
             <ol className="instruction-steps">
-              <li>Visit <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener noreferrer">OAuth consent screen</a></li>
+              <li>Visit <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener noreferrer">OAuth consent screen</a></li>
               <li>Scroll to <strong>Test users</strong> section</li>
               <li>Click <strong>Add Users</strong></li>
               <li>Enter your Gmail address</li>
