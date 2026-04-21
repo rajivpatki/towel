@@ -1090,6 +1090,39 @@ func convertFloat64Slice(values []float64) []float32 {
 	return converted
 }
 
+func isIgnorableSQLiteVecDeleteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(value, "no more rows available (101)")
+}
+
+func recreateEmailEmbeddingIndex(tx *sql.Tx) error {
+	statements := []string{
+		`DROP TABLE IF EXISTS email_embedding_index;`,
+		`CREATE VIRTUAL TABLE email_embedding_index USING vec0(
+			embedding_id integer primary key,
+			embedding_vector float[768] distance_metric=cosine,
+			internal_date_unix integer,
+			has_attachments boolean,
+			is_in_trash boolean,
+			is_in_spam boolean,
+			from_email text,
+			+message_id text,
+			+thread_id text,
+			+subject text,
+			+embedding_text text
+		);`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *App) upsertEmailEmbeddingBatch(documents []emailEmbeddingDocument, vectors [][]float32, config emailEmbeddingConfig) error {
 	tx, err := a.db.Begin()
 	if err != nil {
@@ -1106,8 +1139,7 @@ func (a *App) upsertEmailEmbeddingBatch(documents []emailEmbeddingDocument, vect
 		}
 		vectorJSON := string(vectorJSONBytes)
 
-		var embeddingID int64
-		if err := tx.QueryRow(`
+		if _, err := tx.Exec(`
 			INSERT INTO email_embeddings (
 				message_id,
 				thread_id,
@@ -1145,7 +1177,6 @@ func (a *App) upsertEmailEmbeddingBatch(documents []emailEmbeddingDocument, vect
 				source_sync_updated_at = excluded.source_sync_updated_at,
 				indexed_at = CURRENT_TIMESTAMP,
 				updated_at = CURRENT_TIMESTAMP
-			RETURNING id
 		`,
 			document.Source.MessageID,
 			document.Source.ThreadID,
@@ -1162,39 +1193,6 @@ func (a *App) upsertEmailEmbeddingBatch(documents []emailEmbeddingDocument, vect
 			config.Model,
 			config.Dimensions,
 			nullIfEmpty(document.Source.SyncUpdatedAt),
-		).Scan(&embeddingID); err != nil {
-			return err
-		}
-
-		if _, err := tx.Exec(`DELETE FROM email_embedding_index WHERE embedding_id = ?`, embeddingID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`
-			INSERT INTO email_embedding_index (
-				embedding_id,
-				embedding_vector,
-				internal_date_unix,
-				has_attachments,
-				is_in_trash,
-				is_in_spam,
-				from_email,
-				message_id,
-				thread_id,
-				subject,
-				embedding_text
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`,
-			embeddingID,
-			vectorJSON,
-			document.Source.InternalDateUnix,
-			boolToInt(document.Source.HasAttachments),
-			boolToInt(document.Source.IsInTrash),
-			boolToInt(document.Source.IsInSpam),
-			nullIfEmpty(strings.ToLower(document.Source.FromEmail)),
-			document.Source.MessageID,
-			document.Source.ThreadID,
-			nullIfEmpty(document.Source.Subject),
-			document.Text,
 		); err != nil {
 			return err
 		}
@@ -1220,31 +1218,6 @@ func (a *App) deleteEmailEmbeddingsByMessageIDs(messageIDs []string) error {
 	defer func() {
 		_ = tx.Rollback()
 	}()
-
-	rows, err := tx.Query(`SELECT id FROM email_embeddings WHERE message_id IN (`+placeholders+`)`, args...)
-	if err != nil {
-		return err
-	}
-	embeddingIDs := make([]int64, 0)
-	for rows.Next() {
-		var embeddingID int64
-		if err := rows.Scan(&embeddingID); err != nil {
-			rows.Close()
-			return err
-		}
-		embeddingIDs = append(embeddingIDs, embeddingID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-
-	for _, embeddingID := range embeddingIDs {
-		if _, err := tx.Exec(`DELETE FROM email_embedding_index WHERE embedding_id = ?`, embeddingID); err != nil {
-			return err
-		}
-	}
 	if _, err := tx.Exec(`DELETE FROM email_embeddings WHERE message_id IN (`+placeholders+`)`, args...); err != nil {
 		return err
 	}
@@ -1260,7 +1233,7 @@ func (a *App) clearEmailEmbeddings() error {
 	defer func() {
 		_ = tx.Rollback()
 	}()
-	if _, err := tx.Exec(`DELETE FROM email_embedding_index`); err != nil {
+	if err := recreateEmailEmbeddingIndex(tx); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM email_embeddings`); err != nil {
@@ -1270,34 +1243,101 @@ func (a *App) clearEmailEmbeddings() error {
 }
 
 func (a *App) cleanupOrphanedEmailEmbeddingIndex() error {
-	rows, err := a.db.Query(`
-		SELECT ei.embedding_id
-		FROM email_embedding_index ei
-		LEFT JOIN email_embeddings ee ON ee.id = ei.embedding_id
-		WHERE ee.id IS NULL
+	return a.rebuildEmailEmbeddingIndex()
+}
+
+func (a *App) rebuildEmailEmbeddingIndex() error {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if err := recreateEmailEmbeddingIndex(tx); err != nil {
+		return err
+	}
+	rows, err := tx.Query(`
+		SELECT
+			id,
+			embedding_vector,
+			internal_date_unix,
+			has_attachments,
+			is_in_trash,
+			is_in_spam,
+			COALESCE(from_email, ''),
+			message_id,
+			thread_id,
+			COALESCE(subject, ''),
+			embedding_text
+		FROM email_embeddings
+		ORDER BY id
 	`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-
-	orphanIDs := make([]int64, 0)
 	for rows.Next() {
-		var orphanID int64
-		if err := rows.Scan(&orphanID); err != nil {
+		var embeddingID int64
+		var vectorJSON string
+		var internalDateUnix int64
+		var hasAttachments int
+		var isInTrash int
+		var isInSpam int
+		var fromEmail string
+		var messageID string
+		var threadID string
+		var subject string
+		var embeddingText string
+		if err := rows.Scan(
+			&embeddingID,
+			&vectorJSON,
+			&internalDateUnix,
+			&hasAttachments,
+			&isInTrash,
+			&isInSpam,
+			&fromEmail,
+			&messageID,
+			&threadID,
+			&subject,
+			&embeddingText,
+		); err != nil {
 			return err
 		}
-		orphanIDs = append(orphanIDs, orphanID)
+		if _, err := tx.Exec(`
+			INSERT INTO email_embedding_index (
+				embedding_id,
+				embedding_vector,
+				internal_date_unix,
+				has_attachments,
+				is_in_trash,
+				is_in_spam,
+				from_email,
+				message_id,
+				thread_id,
+				subject,
+				embedding_text
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			embeddingID,
+			vectorJSON,
+			internalDateUnix,
+			hasAttachments,
+			isInTrash,
+			isInSpam,
+			nullIfEmpty(strings.ToLower(fromEmail)),
+			messageID,
+			threadID,
+			nullIfEmpty(subject),
+			embeddingText,
+		); err != nil {
+			return err
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, orphanID := range orphanIDs {
-		if _, err := a.db.Exec(`DELETE FROM email_embedding_index WHERE embedding_id = ?`, orphanID); err != nil {
-			return err
-		}
-	}
-	return nil
+	return tx.Commit()
 }
 
 func (a *App) getEmailEmbeddingStats() (emailEmbeddingStats, error) {

@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	emailSyncRecentWindowDays = 90
-	emailSyncInterval         = 5 * time.Minute
-	emailSyncFreshnessMaxAge  = 2 * time.Minute
+	defaultEmailSyncWindowDays = 365
+	emailSyncInterval          = 5 * time.Minute
+	emailSyncFreshnessMaxAge   = 2 * time.Minute
 )
 
 var errEmailHistoryExpired = errors.New("gmail history cursor expired")
@@ -46,6 +46,7 @@ type emailSyncResult struct {
 	StartHistoryID     string
 	CursorHistoryID    string
 	LastHistoryID      string
+	SyncedWindowDays   int
 	Metrics            emailSyncMetrics
 	UpsertedMessageIDs []string
 	DeletedMessageIDs  []string
@@ -188,6 +189,8 @@ func (a *App) runEmailSync(mode string, reason string) error {
 		}
 	case "full":
 		result, err = a.performFullEmailSync()
+	case "window_update":
+		result, err = a.performWindowUpdateEmailSync()
 	default:
 		err = fmt.Errorf("unsupported email sync mode: %s", mode)
 	}
@@ -211,11 +214,15 @@ func (a *App) performFullEmailSync() (emailSyncResult, error) {
 	if err := a.fetchAndCacheGmailLabels(); err != nil {
 		log.Printf("email sync warning: failed to refresh gmail labels during full sync: %v", err)
 	}
-	messageIDs, cursorHistoryID, err := a.syncRecentMessagesWindow(emailSyncRecentWindowDays)
+	windowDays, err := a.getEmailSyncWindowDays()
 	if err != nil {
 		return emailSyncResult{}, err
 	}
-	deletedMessageIDs, err := a.pruneSyncedEmailsOutsideWindow(messageIDs)
+	messageIDs, cursorHistoryID, err := a.syncRecentMessagesWindow(windowDays)
+	if err != nil {
+		return emailSyncResult{}, err
+	}
+	deletedMessageIDs, err := a.reconcileSyncedEmailsWithinWindow(messageIDs, emailSyncCutoffUnixMillis(windowDays))
 	if err != nil {
 		return emailSyncResult{}, err
 	}
@@ -227,6 +234,7 @@ func (a *App) performFullEmailSync() (emailSyncResult, error) {
 		StartHistoryID:     "",
 		CursorHistoryID:    cursorHistoryID,
 		LastHistoryID:      cursorHistoryID,
+		SyncedWindowDays:   windowDays,
 		Metrics:            metrics,
 		UpsertedMessageIDs: append([]string(nil), messageIDs...),
 		DeletedMessageIDs:  append([]string(nil), deletedMessageIDs...),
@@ -289,10 +297,150 @@ func (a *App) performPartialEmailSync(cursor string) (emailSyncResult, error) {
 		StartHistoryID:     strings.TrimSpace(cursor),
 		CursorHistoryID:    lastHistoryID,
 		LastHistoryID:      lastHistoryID,
+		SyncedWindowDays:   0,
 		Metrics:            metrics,
 		UpsertedMessageIDs: upsertIDs,
 		DeletedMessageIDs:  changes.DeletedIDs(),
 	}, nil
+}
+
+func (a *App) performWindowUpdateEmailSync() (emailSyncResult, error) {
+	if err := a.fetchAndCacheGmailLabels(); err != nil {
+		log.Printf("email sync warning: failed to refresh gmail labels during window update sync: %v", err)
+	}
+	status, err := a.getEmailSyncStatus()
+	if err != nil {
+		return emailSyncResult{}, err
+	}
+	windowDays := normalizeEmailSyncWindowDays(status.SyncedWindowDays)
+	if strings.TrimSpace(status.SyncCursorHistoryID) == "" {
+		return a.performFullEmailSync()
+	}
+	partialResult, err := a.performPartialEmailSync(status.SyncCursorHistoryID)
+	if err != nil {
+		if errors.Is(err, errEmailHistoryExpired) {
+			return a.performFullEmailSync()
+		}
+		return emailSyncResult{}, err
+	}
+	backfillResult, err := a.backfillConfiguredEmailSyncWindow(windowDays)
+	if err != nil {
+		return emailSyncResult{}, err
+	}
+	merged := mergeEmailSyncResults(partialResult, backfillResult)
+	merged.SyncedWindowDays = windowDays
+	if strings.TrimSpace(merged.CursorHistoryID) == "" {
+		merged.CursorHistoryID = strings.TrimSpace(status.SyncCursorHistoryID)
+	}
+	if strings.TrimSpace(merged.LastHistoryID) == "" {
+		merged.LastHistoryID = strings.TrimSpace(status.LastHistoryID)
+	}
+	return merged, nil
+}
+
+func (a *App) backfillConfiguredEmailSyncWindow(windowDays int) (emailSyncResult, error) {
+	windowDays = normalizeEmailSyncWindowDays(windowDays)
+	metrics, err := a.getEmailSyncMetrics()
+	if err != nil {
+		return emailSyncResult{}, err
+	}
+	if metrics.MessageCount == 0 || metrics.OldestMessageInternalDateUnix <= 0 {
+		return a.performFullEmailSync()
+	}
+	cutoffUnixMillis := emailSyncCutoffUnixMillis(windowDays)
+	if metrics.OldestMessageInternalDateUnix <= cutoffUnixMillis {
+		return emailSyncResult{
+			SyncedWindowDays: windowDays,
+			Metrics:          metrics,
+		}, nil
+	}
+	messageIDs, err := a.syncOlderMessagesBeforeDate(metrics.OldestMessageInternalDateUnix, cutoffUnixMillis)
+	if err != nil {
+		return emailSyncResult{}, err
+	}
+	updatedMetrics, err := a.getEmailSyncMetrics()
+	if err != nil {
+		return emailSyncResult{}, err
+	}
+	return emailSyncResult{
+		SyncedWindowDays:   windowDays,
+		Metrics:            updatedMetrics,
+		UpsertedMessageIDs: append([]string(nil), messageIDs...),
+		DeletedMessageIDs:  nil,
+	}, nil
+}
+
+func planEmailSyncWindowUpdate(status EmailSyncStatus, windowDays int) string {
+	windowDays = normalizeEmailSyncWindowDays(windowDays)
+	if strings.TrimSpace(status.SyncCursorHistoryID) == "" || status.MessageCount == 0 || status.OldestMessageInternalDateUnix <= 0 {
+		return "initial_sync_started"
+	}
+	if status.OldestMessageInternalDateUnix > emailSyncCutoffUnixMillis(windowDays) {
+		return "backfill_started"
+	}
+	return "no_sync_needed"
+}
+
+func normalizeEmailSyncWindowDays(windowDays int) int {
+	if windowDays <= 0 {
+		return defaultEmailSyncWindowDays
+	}
+	return windowDays
+}
+
+func emailSyncCutoffUnixMillis(windowDays int) int64 {
+	windowDays = normalizeEmailSyncWindowDays(windowDays)
+	return time.Now().Add(-time.Duration(windowDays) * 24 * time.Hour).UnixMilli()
+}
+
+func mergeEmailSyncResults(primary emailSyncResult, secondary emailSyncResult) emailSyncResult {
+	merged := primary
+	merged.StartHistoryID = firstNonEmptyString(primary.StartHistoryID, secondary.StartHistoryID)
+	merged.CursorHistoryID = firstNonEmptyString(secondary.CursorHistoryID, primary.CursorHistoryID)
+	merged.LastHistoryID = firstNonEmptyString(secondary.LastHistoryID, primary.LastHistoryID)
+	merged.SyncedWindowDays = normalizeEmailSyncWindowDays(firstNonZeroInt(secondary.SyncedWindowDays, primary.SyncedWindowDays))
+	merged.Metrics = secondary.Metrics
+	merged.UpsertedMessageIDs = appendUniqueStringIDs(primary.UpsertedMessageIDs, secondary.UpsertedMessageIDs)
+	merged.DeletedMessageIDs = appendUniqueStringIDs(primary.DeletedMessageIDs, secondary.DeletedMessageIDs)
+	return merged
+}
+
+func appendUniqueStringIDs(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	merged := make([]string, 0)
+	for _, group := range groups {
+		for _, item := range group {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			if _, ok := seen[item]; ok {
+				continue
+			}
+			seen[item] = struct{}{}
+			merged = append(merged, item)
+		}
+	}
+	return merged
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonZeroInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (a *App) getEmailSyncStatus() (EmailSyncStatus, error) {
@@ -325,6 +473,7 @@ func (a *App) getEmailSyncStatus() (EmailSyncStatus, error) {
 	status.SyncCursorHistoryID = syncCursorHistoryID.String
 	status.LastHistoryID = lastHistoryID.String
 	status.LastSyncError = lastSyncError.String
+	status.SyncedWindowDays = normalizeEmailSyncWindowDays(status.SyncedWindowDays)
 	metrics, err := a.getEmailSyncMetrics()
 	if err != nil {
 		return EmailSyncStatus{}, err
@@ -347,8 +496,17 @@ func (a *App) getEmailSyncStatus() (EmailSyncStatus, error) {
 func (a *App) resetEmailSyncStore() error {
 	a.emailSyncMu.Lock()
 	defer a.emailSyncMu.Unlock()
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if err := recreateEmailEmbeddingIndex(tx); err != nil {
+		return err
+	}
 	stmts := []string{
-		`DELETE FROM email_embedding_index;`,
 		`DELETE FROM email_embeddings;`,
 		`DELETE FROM synced_email_labels;`,
 		`DELETE FROM synced_email_attachments;`,
@@ -356,11 +514,11 @@ func (a *App) resetEmailSyncStore() error {
 		`UPDATE email_sync_state SET mailbox_email = NULL, sync_status = 'idle', sync_mode = NULL, last_sync_reason = NULL, last_sync_started_at = NULL, last_sync_completed_at = NULL, last_successful_sync_at = NULL, last_full_sync_completed_at = NULL, last_partial_sync_completed_at = NULL, sync_cursor_history_id = NULL, last_history_id = NULL, last_sync_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = 1;`,
 	}
 	for _, stmt := range stmts {
-		if _, err := a.db.Exec(stmt); err != nil {
+		if _, err := tx.Exec(stmt); err != nil {
 			return err
 		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 func (a *App) markEmailSyncStarted(mode string, reason string, mailboxEmail string) error {
@@ -371,7 +529,11 @@ func (a *App) markEmailSyncStarted(mode string, reason string, mailboxEmail stri
 
 func (a *App) markEmailSyncSucceeded(mode string, reason string, mailboxEmail string, result emailSyncResult) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := a.db.Exec(`UPDATE email_sync_state SET mailbox_email = ?, sync_status = 'idle', sync_mode = NULL, last_sync_reason = ?, last_sync_completed_at = ?, last_successful_sync_at = ?, last_full_sync_completed_at = CASE WHEN ? = 'full' THEN ? ELSE last_full_sync_completed_at END, last_partial_sync_completed_at = CASE WHEN ? = 'partial' THEN ? ELSE last_partial_sync_completed_at END, synced_window_days = CASE WHEN ? = 'full' THEN ? ELSE synced_window_days END, sync_cursor_history_id = ?, last_history_id = ?, last_sync_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, mailboxEmail, reason, now, now, mode, now, mode, now, mode, emailSyncRecentWindowDays, nullIfEmpty(result.CursorHistoryID), nullIfEmpty(result.LastHistoryID))
+	var syncedWindowDays any
+	if mode == "full" || mode == "window_update" {
+		syncedWindowDays = normalizeEmailSyncWindowDays(result.SyncedWindowDays)
+	}
+	_, err := a.db.Exec(`UPDATE email_sync_state SET mailbox_email = ?, sync_status = 'idle', sync_mode = NULL, last_sync_reason = ?, last_sync_completed_at = ?, last_successful_sync_at = ?, last_full_sync_completed_at = CASE WHEN ? = 'full' THEN ? ELSE last_full_sync_completed_at END, last_partial_sync_completed_at = CASE WHEN ? = 'partial' THEN ? ELSE last_partial_sync_completed_at END, synced_window_days = COALESCE(?, synced_window_days), sync_cursor_history_id = ?, last_history_id = ?, last_sync_error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, mailboxEmail, reason, now, now, mode, now, mode, now, syncedWindowDays, nullIfEmpty(result.CursorHistoryID), nullIfEmpty(result.LastHistoryID))
 	return err
 }
 

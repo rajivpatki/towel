@@ -2728,6 +2728,24 @@ label span {
   flex-wrap: wrap;
 }
 
+.settings-inline-form {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.settings-inline-field {
+  display: grid;
+  gap: 0.5rem;
+  min-width: min(240px, 100%);
+}
+
+.settings-inline-field input {
+  max-width: 240px;
+}
+
 .settings-toggle {
   display: inline-flex;
   align-items: center;
@@ -2827,6 +2845,10 @@ label span {
   }
 
   .settings-model-card-header {
+    align-items: stretch;
+  }
+
+  .settings-inline-form {
     align-items: stretch;
   }
 

@@ -493,6 +493,26 @@ func (a *App) getCustomAgents() ([]AgentDefinition, error) {
 	return agents, rows.Err()
 }
 
+func (a *App) getEmailSyncWindowDays() (int, error) {
+	row := a.db.QueryRow(`SELECT synced_window_days FROM email_sync_state WHERE id = 1`)
+	var days int
+	if err := row.Scan(&days); err != nil {
+		return 0, err
+	}
+	if days <= 0 {
+		return defaultEmailSyncWindowDays, nil
+	}
+	return days, nil
+}
+
+func (a *App) saveEmailSyncWindowDays(days int) error {
+	if days <= 0 {
+		return fmt.Errorf("synced_window_days must be greater than 0")
+	}
+	_, err := a.db.Exec(`UPDATE email_sync_state SET synced_window_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1`, days)
+	return err
+}
+
 func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []SettingsAgentInput, googleChat *GoogleChatSettingsIn) error {
 	if _, err := a.db.Exec(`DELETE FROM custom_agents`); err != nil {
 		return err

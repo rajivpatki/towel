@@ -60,12 +60,15 @@ function normalizeAgent(agent) {
 function Settings() {
   const { showToast } = useToast()
   const [loading, setLoading] = useState(true)
+  const [savingEmailSyncDays, setSavingEmailSyncDays] = useState(false)
   const [savingModelSettings, setSavingModelSettings] = useState(false)
   const [savingGoogleChat, setSavingGoogleChat] = useState(false)
   const [restartingGoogleChat, setRestartingGoogleChat] = useState(false)
   const [selectedAgentId, setSelectedAgentId] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [hasApiKey, setHasApiKey] = useState(false)
+  const [emailSyncDays, setEmailSyncDays] = useState('365')
+  const [savedEmailSyncDays, setSavedEmailSyncDays] = useState('365')
   const [agents, setAgents] = useState([])
   const [googleChat, setGoogleChat] = useState({
     enabled: false,
@@ -78,6 +81,9 @@ function Settings() {
 
   const selectedAgent = useMemo(() => agents.find((agent) => agent.agent_id === selectedAgentId) || null, [agents, selectedAgentId])
   const selectedUsesAPIKey = selectedAgent ? selectedAgent.auth_mode !== 'google_oauth' : true
+  const emailSyncDaysDirty = emailSyncDays !== savedEmailSyncDays
+  const parsedEmailSyncDays = Number.parseInt(emailSyncDays, 10)
+  const emailSyncDaysValid = Number.isInteger(parsedEmailSyncDays) && parsedEmailSyncDays > 0
 
   async function loadSettings() {
     try {
@@ -91,6 +97,9 @@ function Settings() {
       }
       setSelectedAgentId(data.selected_agent_id || data.agents?.[0]?.agent_id || '')
       setHasApiKey(Boolean(data.has_api_key))
+      const nextEmailSyncDays = `${Math.max(1, Number.parseInt(data.email_sync?.synced_window_days, 10) || 365)}`
+      setEmailSyncDays(nextEmailSyncDays)
+      setSavedEmailSyncDays(nextEmailSyncDays)
       setAgents(Array.isArray(data.agents) ? data.agents.map(normalizeAgent) : [])
       setGoogleChat((current) => ({
         ...current,
@@ -215,6 +224,57 @@ function Settings() {
     }
   }
 
+  async function saveEmailSyncDays() {
+    if (!emailSyncDaysValid) {
+      showToast({
+        tone: 'error',
+        title: 'Invalid email sync window',
+        description: 'Days of email to sync must be a whole number greater than 0.'
+      })
+      return
+    }
+    setSavingEmailSyncDays(true)
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/settings/email-sync`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          synced_window_days: parsedEmailSyncDays
+        })
+      })
+      const data = await parseResponse(response)
+      const nextValue = `${data.synced_window_days || parsedEmailSyncDays}`
+      setEmailSyncDays(nextValue)
+      setSavedEmailSyncDays(nextValue)
+      const descriptions = {
+        initial_sync_started: 'A sync started to build the mailbox cache for the new window.',
+        backfill_started: 'A sync started to backfill older emails for the new window.',
+        no_sync_needed: 'The setting was saved. Your current cache already covers this window.',
+        sync_already_running: 'The setting was saved. The current sync run will continue with the new window afterwards.'
+      }
+      showToast({
+        tone: 'success',
+        title: 'Email sync window updated',
+        description: descriptions[data.action] || 'The email sync window was updated.'
+      })
+    } catch (err) {
+      showToast({
+        tone: 'error',
+        title: 'Unable to update email sync window',
+        description: err.message
+      })
+    } finally {
+      setSavingEmailSyncDays(false)
+    }
+  }
+
+  function cancelEmailSyncDaysEdit() {
+    setEmailSyncDays(savedEmailSyncDays)
+  }
+
   async function restartGoogleChat() {
     setRestartingGoogleChat(true)
     try {
@@ -267,6 +327,52 @@ function Settings() {
           Manage your active model, rotate API credentials, and control Google Chat from one place.
         </p>
       </div>
+
+      <section className="panel settings-section">
+        <div className="panel-header settings-panel-header">
+          <div>
+            <h3>Days of email to sync</h3>
+            <p className="settings-section-copy">Choose how far back mailbox sync should go. Saving starts any needed backfill automatically, and embeddings follow the sync as usual.</p>
+          </div>
+          <span className="status-pill neutral">
+            <strong>Current:</strong>&nbsp;{savedEmailSyncDays} days
+          </span>
+        </div>
+
+        <div className="settings-model-card">
+          <div className="settings-inline-form">
+            <label className="settings-inline-field">
+              <span>Days</span>
+              <input
+                type="number"
+                min="1"
+                step="1"
+                inputMode="numeric"
+                value={emailSyncDays}
+                onChange={(event) => setEmailSyncDays(event.target.value)}
+                disabled={savingEmailSyncDays}
+              />
+            </label>
+
+            {emailSyncDaysDirty ? (
+              <div className="settings-google-chat-actions">
+                <button type="button" className="secondary" onClick={cancelEmailSyncDaysEdit} disabled={savingEmailSyncDays}>
+                  Cancel
+                </button>
+                <button type="button" onClick={saveEmailSyncDays} disabled={savingEmailSyncDays || !emailSyncDaysValid}>
+                  {savingEmailSyncDays ? 'Setting...' : 'Set'}
+                </button>
+              </div>
+            ) : null}
+          </div>
+
+          {!emailSyncDaysValid ? (
+            <p className="settings-section-copy" style={{ margin: 0 }}>
+              Enter a whole number greater than 0.
+            </p>
+          ) : null}
+        </div>
+      </section>
 
       <section className="panel settings-section">
         <div className="panel-header settings-panel-header">

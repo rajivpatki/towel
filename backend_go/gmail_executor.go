@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/quotedprintable"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -190,11 +193,15 @@ func (a *App) gmailToolMapping() map[string]GmailToolFunc {
 	return map[string]GmailToolFunc{
 		"users.labels.list":             a.gmailUsersLabelsList,
 		"users.labels.create":           a.gmailUsersLabelsCreate,
+		"users.drafts.create":           a.gmailUsersDraftsCreate,
 		"users.messages.list":           a.gmailUsersMessagesList,
 		"users.messages.get":            a.gmailUsersMessagesGet,
 		"users.messages.batchModify":    a.gmailUsersMessagesBatchModify,
 		"users.messages.modify":         a.gmailUsersMessagesModify,
+		"users.settings.filters.list":   a.gmailUsersSettingsFiltersList,
+		"users.settings.filters.get":    a.gmailUsersSettingsFiltersGet,
 		"users.settings.filters.create": a.gmailUsersSettingsFiltersCreate,
+		"users.settings.filters.delete": a.gmailUsersSettingsFiltersDelete,
 		"users.threads.list":            a.gmailUsersThreadsList,
 		"users.threads.get":             a.gmailUsersThreadsGet,
 	}
@@ -274,6 +281,143 @@ func gmailQueryArguments(arguments map[string]any, excludedKeys ...string) url.V
 	return params
 }
 
+func gmailOptionalStringArgument(arguments map[string]any, key string) string {
+	value, _ := arguments[key].(string)
+	return value
+}
+
+func gmailStringListArgument(arguments map[string]any, key string) []string {
+	value, ok := arguments[key]
+	if !ok || value == nil {
+		return nil
+	}
+
+	items := make([]string, 0)
+	appendValue := func(raw string) {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed != "" {
+			items = append(items, trimmed)
+		}
+	}
+
+	switch typed := value.(type) {
+	case string:
+		appendValue(typed)
+	case []string:
+		for _, item := range typed {
+			appendValue(item)
+		}
+	case []any:
+		for _, item := range typed {
+			if text, ok := item.(string); ok {
+				appendValue(text)
+			}
+		}
+	}
+
+	return items
+}
+
+func sanitizeEmailHeaderValue(value string) string {
+	sanitized := strings.ReplaceAll(value, "\r", " ")
+	sanitized = strings.ReplaceAll(sanitized, "\n", " ")
+	return strings.TrimSpace(sanitized)
+}
+
+func joinDraftHeaderValues(items []string, separator string) string {
+	cleaned := make([]string, 0, len(items))
+	for _, item := range items {
+		value := sanitizeEmailHeaderValue(item)
+		if value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	return strings.Join(cleaned, separator)
+}
+
+func quotedPrintableEncode(value string) string {
+	var buffer bytes.Buffer
+	writer := quotedprintable.NewWriter(&buffer)
+	_, _ = writer.Write([]byte(value))
+	_ = writer.Close()
+	return buffer.String()
+}
+
+func buildGmailDraftRaw(arguments map[string]any) (string, string, error) {
+	to := gmailStringListArgument(arguments, "to")
+	cc := gmailStringListArgument(arguments, "cc")
+	bcc := gmailStringListArgument(arguments, "bcc")
+	references := gmailStringListArgument(arguments, "references")
+
+	subject := sanitizeEmailHeaderValue(gmailOptionalStringArgument(arguments, "subject"))
+	bodyText := gmailOptionalStringArgument(arguments, "bodyText")
+	bodyHTML := gmailOptionalStringArgument(arguments, "bodyHtml")
+	inReplyTo := sanitizeEmailHeaderValue(gmailOptionalStringArgument(arguments, "inReplyTo"))
+	threadID := sanitizeEmailHeaderValue(gmailOptionalStringArgument(arguments, "threadId"))
+
+	if len(to) == 0 {
+		return "", "", errors.New("to is required")
+	}
+	if subject == "" {
+		return "", "", errors.New("subject is required")
+	}
+	if strings.TrimSpace(bodyText) == "" && strings.TrimSpace(bodyHTML) == "" {
+		return "", "", errors.New("bodyText or bodyHtml is required")
+	}
+
+	var message bytes.Buffer
+	writeLine := func(line string) {
+		message.WriteString(line)
+		message.WriteString("\r\n")
+	}
+
+	writeLine("To: " + joinDraftHeaderValues(to, ", "))
+	if len(cc) > 0 {
+		writeLine("Cc: " + joinDraftHeaderValues(cc, ", "))
+	}
+	if len(bcc) > 0 {
+		writeLine("Bcc: " + joinDraftHeaderValues(bcc, ", "))
+	}
+	writeLine("Subject: " + mime.QEncoding.Encode("utf-8", subject))
+	if inReplyTo != "" {
+		writeLine("In-Reply-To: " + inReplyTo)
+	}
+	if len(references) > 0 {
+		writeLine("References: " + joinDraftHeaderValues(references, " "))
+	}
+	writeLine("MIME-Version: 1.0")
+
+	switch {
+	case strings.TrimSpace(bodyText) != "" && strings.TrimSpace(bodyHTML) != "":
+		boundary := fmt.Sprintf("towel_%d", time.Now().UnixNano())
+		writeLine(`Content-Type: multipart/alternative; boundary="` + boundary + `"`)
+		writeLine("")
+		writeLine("--" + boundary)
+		writeLine(`Content-Type: text/plain; charset="UTF-8"`)
+		writeLine("Content-Transfer-Encoding: quoted-printable")
+		writeLine("")
+		writeLine(quotedPrintableEncode(bodyText))
+		writeLine("--" + boundary)
+		writeLine(`Content-Type: text/html; charset="UTF-8"`)
+		writeLine("Content-Transfer-Encoding: quoted-printable")
+		writeLine("")
+		writeLine(quotedPrintableEncode(bodyHTML))
+		writeLine("--" + boundary + "--")
+	case strings.TrimSpace(bodyHTML) != "":
+		writeLine(`Content-Type: text/html; charset="UTF-8"`)
+		writeLine("Content-Transfer-Encoding: quoted-printable")
+		writeLine("")
+		writeLine(quotedPrintableEncode(bodyHTML))
+	default:
+		writeLine(`Content-Type: text/plain; charset="UTF-8"`)
+		writeLine("Content-Transfer-Encoding: quoted-printable")
+		writeLine("")
+		writeLine(quotedPrintableEncode(bodyText))
+	}
+
+	return base64.RawURLEncoding.EncodeToString(message.Bytes()), threadID, nil
+}
+
 // doGmailRequest executes an HTTP request and returns the response body and status code
 func (a *App) doGmailRequest(req *http.Request) ([]byte, int, error) {
 	resp, err := a.httpClient.Do(req)
@@ -314,6 +458,42 @@ func (a *App) gmailUsersLabelsCreate(accessToken string, arguments map[string]an
 	}
 
 	req, err := http.NewRequest(http.MethodPost, gmailAPIBase+"/users/"+url.PathEscape(userID)+"/labels", strings.NewReader(string(body)))
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	respBody, status, err := a.doGmailRequest(req)
+	if err != nil {
+		return "", status, err
+	}
+	return string(respBody), status, nil
+}
+
+// gmailUsersDraftsCreate creates an unsent Gmail draft message.
+func (a *App) gmailUsersDraftsCreate(accessToken string, arguments map[string]any) (string, int, error) {
+	userID := gmailUserID(arguments)
+	raw, threadID, err := buildGmailDraftRaw(arguments)
+	if err != nil {
+		return "", 0, err
+	}
+
+	messagePayload := map[string]any{
+		"raw": raw,
+	}
+	if threadID != "" {
+		messagePayload["threadId"] = threadID
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"message": messagePayload,
+	})
+	if err != nil {
+		return "", 0, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, gmailAPIBase+"/users/"+url.PathEscape(userID)+"/drafts", strings.NewReader(string(body)))
 	if err != nil {
 		return "", 0, err
 	}
@@ -446,6 +626,73 @@ func (a *App) gmailUsersSettingsFiltersCreate(accessToken string, arguments map[
 		return "", status, err
 	}
 	return string(respBody), status, nil
+}
+
+func (a *App) gmailUsersSettingsFiltersList(accessToken string, arguments map[string]any) (string, int, error) {
+	userID := gmailUserID(arguments)
+	params := gmailQueryArguments(arguments, "userId")
+	urlStr := gmailAPIBase + "/users/" + url.PathEscape(userID) + "/settings/filters"
+	if encoded := params.Encode(); encoded != "" {
+		urlStr += "?" + encoded
+	}
+
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	body, status, err := a.doGmailRequest(req)
+	if err != nil {
+		return "", status, err
+	}
+	return string(body), status, nil
+}
+
+func (a *App) gmailUsersSettingsFiltersGet(accessToken string, arguments map[string]any) (string, int, error) {
+	userID := gmailUserID(arguments)
+	id, ok := arguments["id"].(string)
+	if !ok || id == "" {
+		return "", 0, errors.New("id is required")
+	}
+
+	params := gmailQueryArguments(arguments, "userId", "id")
+	urlStr := gmailAPIBase + "/users/" + url.PathEscape(userID) + "/settings/filters/" + url.PathEscape(id)
+	if encoded := params.Encode(); encoded != "" {
+		urlStr += "?" + encoded
+	}
+
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	body, status, err := a.doGmailRequest(req)
+	if err != nil {
+		return "", status, err
+	}
+	return string(body), status, nil
+}
+
+func (a *App) gmailUsersSettingsFiltersDelete(accessToken string, arguments map[string]any) (string, int, error) {
+	userID := gmailUserID(arguments)
+	id, ok := arguments["id"].(string)
+	if !ok || id == "" {
+		return "", 0, errors.New("id is required")
+	}
+
+	req, err := http.NewRequest(http.MethodDelete, gmailAPIBase+"/users/"+url.PathEscape(userID)+"/settings/filters/"+url.PathEscape(id), nil)
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	body, status, err := a.doGmailRequest(req)
+	if err != nil {
+		return "", status, err
+	}
+	return string(body), status, nil
 }
 
 // gmailUsersThreadsList lists the threads in the user's mailbox.

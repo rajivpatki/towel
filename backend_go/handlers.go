@@ -516,6 +516,11 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		emailSyncWindowDays, err := a.getEmailSyncWindowDays()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		agents := make([]SettingsAgent, 0, len(agentDefinitions)+len(customAgents))
 		for _, agent := range agentDefinitions {
 			agents = append(agents, SettingsAgent{
@@ -547,7 +552,10 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 			SelectedAgentID: state.SelectedAgentID,
 			HasAPIKey:       hasAPIKey,
 			Agents:          agents,
-			GoogleChat:      googleChat,
+			EmailSync: EmailSyncSettingsOut{
+				SyncedWindowDays: normalizeEmailSyncWindowDays(emailSyncWindowDays),
+			},
+			GoogleChat: googleChat,
 		})
 	case http.MethodPost:
 		var payload SettingsIn
@@ -567,6 +575,50 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
 	}
+}
+
+func (a *App) handleEmailSyncWindowSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var payload EmailSyncWindowSettingsIn
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	windowDays := payload.SyncedWindowDays
+	if windowDays <= 0 {
+		writeError(w, http.StatusBadRequest, "synced_window_days must be greater than 0")
+		return
+	}
+	if err := a.saveEmailSyncWindowDays(windowDays); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("Failed to save email sync settings: %v", err))
+		return
+	}
+	status, err := a.getEmailSyncStatus()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	status.SyncedWindowDays = normalizeEmailSyncWindowDays(windowDays)
+	action := planEmailSyncWindowUpdate(status, windowDays)
+	statusCode := http.StatusOK
+	if status.SyncStatus == "running" {
+		action = "sync_already_running"
+	} else if action != "no_sync_needed" {
+		a.syncEmailsInBackground("window_update", "settings_window_update")
+		status.SyncStatus = "running"
+		status.SyncMode = "window_update"
+		status.LastSyncReason = "settings_window_update"
+		statusCode = http.StatusAccepted
+	}
+	writeJSON(w, statusCode, EmailSyncWindowSettingsOut{
+		Success:          true,
+		Action:           action,
+		SyncedWindowDays: normalizeEmailSyncWindowDays(windowDays),
+		Sync:             status,
+	})
 }
 
 func (a *App) handleGoogleChatStatus(w http.ResponseWriter, r *http.Request) {

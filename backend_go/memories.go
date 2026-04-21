@@ -62,6 +62,24 @@ type memorySearchMatch struct {
 	UpdatedAt string
 }
 
+func recreateMemoryEmbeddingIndex(tx *sql.Tx) error {
+	statements := []string{
+		`DROP TABLE IF EXISTS memory_embedding_index;`,
+		`CREATE VIRTUAL TABLE memory_embedding_index USING vec0(
+			embedding_id integer primary key,
+			embedding_vector float[768] distance_metric=cosine,
+			+memory_id integer,
+			+embedding_text text
+		);`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func normalizeMemoryText(value string) string {
 	return truncateTextPreservingBoundaries(cleanWhitespace(value), memoryEmbeddingMaxTextChars)
 }
@@ -358,38 +376,6 @@ func (a *App) deleteMemories(ids []int64, reason string) (int64, error) {
 		_ = tx.Rollback()
 	}()
 
-	rows, err := tx.Query(`SELECT id FROM memory_embeddings WHERE memory_id IN (`+placeholders+`)`, args...)
-	if err != nil {
-		log.Printf("memory failure: action=delete_list_embeddings reason=%s err=%v", reason, err)
-		return 0, err
-	}
-	embeddingIDs := make([]int64, 0)
-	for rows.Next() {
-		var embeddingID int64
-		if err := rows.Scan(&embeddingID); err != nil {
-			rows.Close()
-			log.Printf("memory failure: action=delete_scan_embedding_ids reason=%s err=%v", reason, err)
-			return 0, err
-		}
-		embeddingIDs = append(embeddingIDs, embeddingID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		log.Printf("memory failure: action=delete_iterate_embedding_ids reason=%s err=%v", reason, err)
-		return 0, err
-	}
-	rows.Close()
-
-	for _, embeddingID := range embeddingIDs {
-		if _, err := tx.Exec(`DELETE FROM memory_embedding_index WHERE embedding_id = ?`, embeddingID); err != nil {
-			log.Printf("memory failure: action=delete_memory_embedding_index reason=%s embedding_id=%d err=%v", reason, embeddingID, err)
-			return 0, err
-		}
-	}
-	if _, err := tx.Exec(`DELETE FROM memory_embeddings WHERE memory_id IN (`+placeholders+`)`, args...); err != nil {
-		log.Printf("memory failure: action=delete_memory_embeddings reason=%s err=%v", reason, err)
-		return 0, err
-	}
 	result, err := tx.Exec(`DELETE FROM memories WHERE id IN (`+placeholders+`)`, args...)
 	if err != nil {
 		log.Printf("memory failure: action=delete_memories reason=%s err=%v", reason, err)
@@ -405,6 +391,10 @@ func (a *App) deleteMemories(ids []int64, reason string) (int64, error) {
 		return 0, err
 	}
 	log.Printf("memory success: action=delete reason=%s deleted=%d", reason, deleted)
+	if err := a.rebuildMemoryEmbeddingIndex(); err != nil {
+		log.Printf("memory failure: action=rebuild_memory_embedding_index reason=%s err=%v", reason, err)
+		return 0, err
+	}
 	_ = a.logActionHistory("delete", fmt.Sprintf("Deleted %d memory item(s)", deleted), "")
 	return deleted, nil
 }
@@ -849,8 +839,7 @@ func (a *App) upsertMemoryEmbeddingBatch(documents []memoryEmbeddingDocument, ve
 		}
 		vectorJSON := string(vectorJSONBytes)
 
-		var embeddingID int64
-		if err := tx.QueryRow(`
+		if _, err := tx.Exec(`
 			INSERT INTO memory_embeddings (
 				memory_id,
 				embedding_text,
@@ -871,7 +860,6 @@ func (a *App) upsertMemoryEmbeddingBatch(documents []memoryEmbeddingDocument, ve
 				embedding_dimensions = excluded.embedding_dimensions,
 				indexed_at = CURRENT_TIMESTAMP,
 				updated_at = CURRENT_TIMESTAMP
-			RETURNING id
 		`,
 			document.Source.ID,
 			document.Text,
@@ -880,25 +868,6 @@ func (a *App) upsertMemoryEmbeddingBatch(documents []memoryEmbeddingDocument, ve
 			config.Provider,
 			config.Model,
 			config.Dimensions,
-		).Scan(&embeddingID); err != nil {
-			return err
-		}
-
-		if _, err := tx.Exec(`DELETE FROM memory_embedding_index WHERE embedding_id = ?`, embeddingID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`
-			INSERT INTO memory_embedding_index (
-				embedding_id,
-				embedding_vector,
-				memory_id,
-				embedding_text
-			) VALUES (?, ?, ?, ?)
-		`,
-			embeddingID,
-			vectorJSON,
-			document.Source.ID,
-			document.Text,
 		); err != nil {
 			return err
 		}
@@ -924,31 +893,6 @@ func (a *App) deleteMemoryEmbeddingsByMemoryIDs(memoryIDs []int64) error {
 	defer func() {
 		_ = tx.Rollback()
 	}()
-
-	rows, err := tx.Query(`SELECT id FROM memory_embeddings WHERE memory_id IN (`+placeholders+`)`, args...)
-	if err != nil {
-		return err
-	}
-	embeddingIDs := make([]int64, 0)
-	for rows.Next() {
-		var embeddingID int64
-		if err := rows.Scan(&embeddingID); err != nil {
-			rows.Close()
-			return err
-		}
-		embeddingIDs = append(embeddingIDs, embeddingID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-
-	for _, embeddingID := range embeddingIDs {
-		if _, err := tx.Exec(`DELETE FROM memory_embedding_index WHERE embedding_id = ?`, embeddingID); err != nil {
-			return err
-		}
-	}
 	if _, err := tx.Exec(`DELETE FROM memory_embeddings WHERE memory_id IN (`+placeholders+`)`, args...); err != nil {
 		return err
 	}
@@ -963,7 +907,7 @@ func (a *App) clearMemoryEmbeddings() error {
 	defer func() {
 		_ = tx.Rollback()
 	}()
-	if _, err := tx.Exec(`DELETE FROM memory_embedding_index`); err != nil {
+	if err := recreateMemoryEmbeddingIndex(tx); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM memory_embeddings`); err != nil {
@@ -973,34 +917,66 @@ func (a *App) clearMemoryEmbeddings() error {
 }
 
 func (a *App) cleanupOrphanedMemoryEmbeddingIndex() error {
-	rows, err := a.db.Query(`
-		SELECT mei.embedding_id
-		FROM memory_embedding_index mei
-		LEFT JOIN memory_embeddings me ON me.id = mei.embedding_id
-		WHERE me.id IS NULL
+	return a.rebuildMemoryEmbeddingIndex()
+}
+
+func (a *App) rebuildMemoryEmbeddingIndex() error {
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if err := recreateMemoryEmbeddingIndex(tx); err != nil {
+		return err
+	}
+	rows, err := tx.Query(`
+		SELECT
+			id,
+			embedding_vector,
+			memory_id,
+			embedding_text
+		FROM memory_embeddings
+		ORDER BY id
 	`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-
-	orphanIDs := make([]int64, 0)
 	for rows.Next() {
-		var orphanID int64
-		if err := rows.Scan(&orphanID); err != nil {
+		var embeddingID int64
+		var vectorJSON string
+		var memoryID int64
+		var embeddingText string
+		if err := rows.Scan(
+			&embeddingID,
+			&vectorJSON,
+			&memoryID,
+			&embeddingText,
+		); err != nil {
 			return err
 		}
-		orphanIDs = append(orphanIDs, orphanID)
+		if _, err := tx.Exec(`
+			INSERT INTO memory_embedding_index (
+				embedding_id,
+				embedding_vector,
+				memory_id,
+				embedding_text
+			) VALUES (?, ?, ?, ?)
+		`,
+			embeddingID,
+			vectorJSON,
+			memoryID,
+			embeddingText,
+		); err != nil {
+			return err
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, orphanID := range orphanIDs {
-		if _, err := a.db.Exec(`DELETE FROM memory_embedding_index WHERE embedding_id = ?`, orphanID); err != nil {
-			return err
-		}
-	}
-	return nil
+	return tx.Commit()
 }
 
 func (a *App) searchMemoryMatches(query string) ([]memorySearchMatch, emailEmbeddingConfig, error) {

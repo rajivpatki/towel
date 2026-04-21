@@ -84,6 +84,22 @@ func gmailThreadIDSchema() map[string]any {
 	))
 }
 
+func gmailFilterIDSchema() map[string]any {
+	return gmailStringSchema(gmailDescription(
+		"Opaque Gmail filter identifier for one saved filter rule in mailbox settings. Use the `id` returned by `users.settings.filters.list` when inspecting or deleting an existing filter.",
+		`{"id":"1234567890123456"}`,
+		`{"id":"5678901234567890"}`,
+	))
+}
+
+func gmailEmailAddressArraySchema(description string) map[string]any {
+	return gmailStringArraySchema(gmailDescription(
+		description,
+		`{"to":["alice@example.com"]}`,
+		`{"to":["Alice Example <alice@example.com>","bob@example.com"]}`,
+	))
+}
+
 var gmailToolDefinitions = []GmailToolDefinition{
 	{
 		Name:         "users.labels.list",
@@ -158,7 +174,7 @@ var gmailToolDefinitions = []GmailToolDefinition{
 		Description: gmailDescription(
 			"Search or page through individual messages in a mailbox. This is the primary discovery tool for inbox triage because it supports Gmail query syntax, label filtering, spam or trash inclusion, and pagination over large result sets.",
 			`{"userId":"me","q":"from:github newer_than:7d","maxResults":25}`,
-			`{"userId":"me","labelIds":["UNREAD","CATEGORY_PROMOTIONS"],"includeSpamTrash":false}`, 
+			`{"userId":"me","labelIds":["UNREAD","CATEGORY_PROMOTIONS"],"includeSpamTrash":false}`,
 		),
 		SafetyModel: "read_only",
 		Parameters: gmailObjectSchema(
@@ -265,10 +281,97 @@ var gmailToolDefinitions = []GmailToolDefinition{
 		Parameters: gmailObjectSchema(
 			"Parameters for `users.messages.modify`. This schema covers the path parameters and the full Gmail API request body for single-message label mutation.",
 			map[string]any{
-				"userId":        gmailUserIDSchema(),
-				"id":            gmailMessageIDSchema(),
-				"addLabelIds":   gmailStringArraySchema(gmailDescription("Label ids to add to the target message. Use this to tag or classify one message without touching the rest of the conversation or the rest of the search results.", `{"addLabelIds":["STARRED"]}`, `{"addLabelIds":["Label_1234567890","IMPORTANT"]}`)),
+				"userId":         gmailUserIDSchema(),
+				"id":             gmailMessageIDSchema(),
+				"addLabelIds":    gmailStringArraySchema(gmailDescription("Label ids to add to the target message. Use this to tag or classify one message without touching the rest of the conversation or the rest of the search results.", `{"addLabelIds":["STARRED"]}`, `{"addLabelIds":["Label_1234567890","IMPORTANT"]}`)),
 				"removeLabelIds": gmailStringArraySchema(gmailDescription("Label ids to remove from the target message. This is commonly used to mark the mail as read by removing `UNREAD`, or to archive it by removing `INBOX`.", `{"removeLabelIds":["UNREAD"]}`, `{"removeLabelIds":["INBOX","Label_999999"]}`)),
+			},
+			"id",
+		),
+	},
+	{
+		Name:         "users.drafts.create",
+		GmailActions: []string{"users.drafts.create"},
+		Description: gmailDescription(
+			"Create a Gmail draft email without sending it. Use this when the user wants a reply or outbound message prepared for review, especially when the user may decide later whether to send it.",
+			`{"userId":"me","to":["alice@example.com"],"subject":"Re: Project update","bodyText":"Thanks for the update. I can meet on Thursday.","threadId":"18f0a0bf934fe777","inReplyTo":"<message-id@example.com>","references":["<older@example.com>","<message-id@example.com>"]}`,
+			`{"userId":"me","to":["vendor@example.com"],"cc":["finance@example.com"],"subject":"Question about invoice 1042","bodyHtml":"<p>Could you clarify line item 3?</p>"}`,
+		),
+		SafetyModel: "safe_write",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"userId": gmailUserIDSchema(),
+				"to": gmailEmailAddressArraySchema(
+					"Primary recipient list for the draft. Provide one or more email addresses or RFC 5322 mailbox strings.",
+				),
+				"cc": gmailEmailAddressArraySchema(
+					"Optional CC recipient list for the draft.",
+				),
+				"bcc": gmailEmailAddressArraySchema(
+					"Optional BCC recipient list for the draft.",
+				),
+				"subject": gmailStringSchema(gmailDescription(
+					"Subject line for the draft. For replies, keep it aligned with the conversation subject so Gmail can thread the draft correctly.",
+					`{"subject":"Re: Project update"}`,
+					`{"subject":"Invoice question"}`,
+				)),
+				"bodyText": gmailStringSchema(gmailDescription(
+					"Optional plain-text body for the draft. Provide this when drafting a normal text reply or when you want a plain-text fallback alongside HTML.",
+					`{"bodyText":"Thanks. I reviewed the proposal and have two questions."}`,
+					`{"bodyText":"Following up on our call today."}`,
+				)),
+				"bodyHtml": gmailStringSchema(gmailDescription(
+					"Optional HTML body for the draft. Use valid lightweight email HTML if rich formatting is needed.",
+					`{"bodyHtml":"<p>Thanks for the update.</p><p>I can meet on Thursday.</p>"}`,
+					`{"bodyHtml":"<p>Could you send the revised contract?</p>"}`,
+				)),
+				"threadId": gmailThreadIDSchema(),
+				"inReplyTo": gmailStringSchema(gmailDescription(
+					"Optional RFC 822 `Message-ID` header value of the message being replied to. Include angle brackets exactly as returned by email headers when available.",
+					`{"inReplyTo":"<CAD1234@example.com>"}`,
+					`{"inReplyTo":"<18f0a0bf934fe777@mail.example.com>"}`,
+				)),
+				"references": gmailStringArraySchema(gmailDescription(
+					"Optional ordered `References` header values for conversation threading. Pass prior RFC 822 `Message-ID` values exactly as they appeared in message headers.",
+					`{"references":["<older@example.com>","<CAD1234@example.com>"]}`,
+					`{"references":["<root@example.com>","<reply@example.com>"]}`,
+				)),
+			},
+			"required":             []string{"to", "subject"},
+			"additionalProperties": false,
+		},
+	},
+	{
+		Name:         "users.settings.filters.list",
+		GmailActions: []string{"users.settings.filters.list"},
+		Description: gmailDescription(
+			"List all saved Gmail filters for the mailbox. Use this before inspecting, explaining, or deleting filters so the model can work from real filter ids and current criteria/action definitions.",
+			`{"userId":"me"}`,
+			`{"userId":"support@example.com"}`,
+		),
+		SafetyModel: "read_only",
+		Parameters: gmailObjectSchema(
+			"Parameters for `users.settings.filters.list`. The Gmail API only requires the mailbox owner path parameter for this operation.",
+			map[string]any{
+				"userId": gmailUserIDSchema(),
+			},
+		),
+	},
+	{
+		Name:         "users.settings.filters.get",
+		GmailActions: []string{"users.settings.filters.get"},
+		Description: gmailDescription(
+			"Fetch one saved Gmail filter by id. Use this after listing filters when the agent needs the exact criteria and actions for a specific rule before describing, validating, or deleting it.",
+			`{"userId":"me","id":"1234567890123456"}`,
+			`{"userId":"me","id":"5678901234567890"}`,
+		),
+		SafetyModel: "read_only",
+		Parameters: gmailObjectSchema(
+			"Parameters for `users.settings.filters.get`. This schema covers the mailbox owner path parameter and the Gmail filter id path parameter.",
+			map[string]any{
+				"userId": gmailUserIDSchema(),
+				"id":     gmailFilterIDSchema(),
 			},
 			"id",
 		),
@@ -293,14 +396,14 @@ var gmailToolDefinitions = []GmailToolDefinition{
 						`{"criteria":{"query":"category:promotions older_than:30d","excludeChats":true}}`,
 					),
 					map[string]any{
-						"from": gmailStringSchema(gmailDescription("Match messages from a specific sender address or phrase in the From header.", `{"from":"billing@vendor.com"}`, `{"from":"newsletter@example.com"}`)),
-						"to": gmailStringSchema(gmailDescription("Match messages addressed to a specific recipient value in the To header.", `{"to":"support@example.com"}`, `{"to":"inbox+orders@example.com"}`)),
-						"subject": gmailStringSchema(gmailDescription("Match messages whose subject contains the given text. This is helpful for predictable automated mail such as invoices or alerts.", `{"subject":"invoice"}`, `{"subject":"build failed"}`)),
-						"query": gmailStringSchema(gmailDescription("Advanced Gmail search syntax that must match for the filter to fire. This supports the same operators as Gmail search, including labels, categories, size filters, and boolean terms.", `{"query":"has:attachment filename:pdf"}`, `{"query":"category:promotions older_than:30d"}`)),
-						"negatedQuery": gmailStringSchema(gmailDescription("Advanced Gmail search syntax that must not match. Use this to carve out exceptions from a broader filter definition.", `{"negatedQuery":"label:keep"}`, `{"negatedQuery":"from:ceo@example.com"}`)),
-						"hasAttachment": gmailBooleanSchema(gmailDescription("Whether the message must include at least one attachment.", `{"hasAttachment":true}`, `{"hasAttachment":false}`)),
-						"excludeChats": gmailBooleanSchema(gmailDescription("Whether chat conversations should be excluded from matching. This is useful when you only want email messages and never Google Chat transcripts.", `{"excludeChats":true}`, `{"excludeChats":false}`)),
-						"size": gmailIntegerSchema(gmailDescription("Message size threshold in bytes used together with `sizeComparison`.", `{"size":500000}`, `{"size":10485760}`)),
+						"from":           gmailStringSchema(gmailDescription("Match messages from a specific sender address or phrase in the From header.", `{"from":"billing@vendor.com"}`, `{"from":"newsletter@example.com"}`)),
+						"to":             gmailStringSchema(gmailDescription("Match messages addressed to a specific recipient value in the To header.", `{"to":"support@example.com"}`, `{"to":"inbox+orders@example.com"}`)),
+						"subject":        gmailStringSchema(gmailDescription("Match messages whose subject contains the given text. This is helpful for predictable automated mail such as invoices or alerts.", `{"subject":"invoice"}`, `{"subject":"build failed"}`)),
+						"query":          gmailStringSchema(gmailDescription("Advanced Gmail search syntax that must match for the filter to fire. This supports the same operators as Gmail search, including labels, categories, size filters, and boolean terms.", `{"query":"has:attachment filename:pdf"}`, `{"query":"category:promotions older_than:30d"}`)),
+						"negatedQuery":   gmailStringSchema(gmailDescription("Advanced Gmail search syntax that must not match. Use this to carve out exceptions from a broader filter definition.", `{"negatedQuery":"label:keep"}`, `{"negatedQuery":"from:ceo@example.com"}`)),
+						"hasAttachment":  gmailBooleanSchema(gmailDescription("Whether the message must include at least one attachment.", `{"hasAttachment":true}`, `{"hasAttachment":false}`)),
+						"excludeChats":   gmailBooleanSchema(gmailDescription("Whether chat conversations should be excluded from matching. This is useful when you only want email messages and never Google Chat transcripts.", `{"excludeChats":true}`, `{"excludeChats":false}`)),
+						"size":           gmailIntegerSchema(gmailDescription("Message size threshold in bytes used together with `sizeComparison`.", `{"size":500000}`, `{"size":10485760}`)),
 						"sizeComparison": gmailStringSchema(gmailDescription("How Gmail should compare the message size against `size`. Use `larger` for messages above the threshold or `smaller` for messages below it.", `{"sizeComparison":"larger"}`, `{"sizeComparison":"smaller"}`), "larger", "smaller"),
 					},
 				),
@@ -311,13 +414,31 @@ var gmailToolDefinitions = []GmailToolDefinition{
 						`{"action":{"forward":"archive@example.com"}}`,
 					),
 					map[string]any{
-						"addLabelIds": gmailStringArraySchema(gmailDescription("Label ids Gmail should add when a message matches the filter.", `{"addLabelIds":["IMPORTANT"]}`, `{"addLabelIds":["Label_1234567890","STARRED"]}`)),
+						"addLabelIds":    gmailStringArraySchema(gmailDescription("Label ids Gmail should add when a message matches the filter.", `{"addLabelIds":["IMPORTANT"]}`, `{"addLabelIds":["Label_1234567890","STARRED"]}`)),
 						"removeLabelIds": gmailStringArraySchema(gmailDescription("Label ids Gmail should remove when a message matches the filter. Removing `INBOX` is the normal way to skip the inbox and archive matching mail.", `{"removeLabelIds":["INBOX"]}`, `{"removeLabelIds":["UNREAD","INBOX"]}`)),
-						"forward": gmailStringSchema(gmailDescription("Verified forwarding address that Gmail should send matching mail to. The destination must already be configured in the Gmail account settings.", `{"forward":"archive@example.com"}`, `{"forward":"ops-team@example.com"}`)),
+						"forward":        gmailStringSchema(gmailDescription("Verified forwarding address that Gmail should send matching mail to. The destination must already be configured in the Gmail account settings.", `{"forward":"archive@example.com"}`, `{"forward":"ops-team@example.com"}`)),
 					},
 				),
 			},
 			"action",
+		),
+	},
+	{
+		Name:         "users.settings.filters.delete",
+		GmailActions: []string{"users.settings.filters.delete"},
+		Description: gmailDescription(
+			"Delete one saved Gmail filter rule by id. Use this only when the user explicitly wants a rule removed or replaced, because the filter will stop processing future mail immediately.",
+			`{"userId":"me","id":"1234567890123456"}`,
+			`{"userId":"me","id":"5678901234567890"}`,
+		),
+		SafetyModel: "safe_write",
+		Parameters: gmailObjectSchema(
+			"Parameters for `users.settings.filters.delete`. This schema covers the mailbox owner path parameter and the Gmail filter id path parameter.",
+			map[string]any{
+				"userId": gmailUserIDSchema(),
+				"id":     gmailFilterIDSchema(),
+			},
+			"id",
 		),
 	},
 	{
@@ -326,7 +447,7 @@ var gmailToolDefinitions = []GmailToolDefinition{
 		Description: gmailDescription(
 			"Search or page through conversation threads instead of individual messages. Use this when the user thinks in conversations and you want one result per email thread rather than one result per message.",
 			`{"userId":"me","q":"label:inbox newer_than:14d","maxResults":20}`,
-			`{"userId":"me","labelIds":["UNREAD"],"includeSpamTrash":false}`, 
+			`{"userId":"me","labelIds":["UNREAD"],"includeSpamTrash":false}`,
 		),
 		SafetyModel: "read_only",
 		Parameters: gmailObjectSchema(
@@ -353,9 +474,9 @@ var gmailToolDefinitions = []GmailToolDefinition{
 		Parameters: gmailObjectSchema(
 			"Parameters for `users.threads.get`. This schema covers the path parameters and the full Gmail API query surface for thread retrieval.",
 			map[string]any{
-				"userId": gmailUserIDSchema(),
-				"id":     gmailThreadIDSchema(),
-				"format": gmailStringSchema(gmailDescription("Response projection for the thread. `minimal` keeps the response compact, `metadata` returns selected headers, and `full` returns the parsed message payloads in the thread.", `{"format":"minimal"}`, `{"format":"full"}`), "full", "metadata", "minimal"),
+				"userId":          gmailUserIDSchema(),
+				"id":              gmailThreadIDSchema(),
+				"format":          gmailStringSchema(gmailDescription("Response projection for the thread. `minimal` keeps the response compact, `metadata` returns selected headers, and `full` returns the parsed message payloads in the thread.", `{"format":"minimal"}`, `{"format":"full"}`), "full", "metadata", "minimal"),
 				"metadataHeaders": gmailStringArraySchema(gmailDescription("Header names to include when `format` is `metadata`.", `{"metadataHeaders":["Subject","From"]}`, `{"metadataHeaders":["Delivered-To","List-Unsubscribe"]}`)),
 			},
 			"id",

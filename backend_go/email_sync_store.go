@@ -230,7 +230,7 @@ func (a *App) syncRecentMessagesWindow(windowDays int) ([]string, string, error)
 	ids := make([]string, 0)
 	seen := make(map[string]struct{})
 	pendingEmbeddingMessageIDs := make([]string, 0, emailEmbeddingBatchSize)
-	cutoffUnixMillis := time.Now().Add(-time.Duration(windowDays) * 24 * time.Hour).UnixMilli()
+	cutoffUnixMillis := emailSyncCutoffUnixMillis(windowDays)
 	pageToken := ""
 	cursorHistoryID := ""
 	flushPendingEmbeddingMessages := func() {
@@ -285,6 +285,73 @@ func (a *App) syncRecentMessagesWindow(windowDays int) ([]string, string, error)
 	}
 	flushPendingEmbeddingMessages()
 	return ids, cursorHistoryID, nil
+}
+
+func (a *App) syncOlderMessagesBeforeDate(oldestKnownUnixMillis int64, cutoffUnixMillis int64) ([]string, error) {
+	if oldestKnownUnixMillis <= 0 || cutoffUnixMillis <= 0 || oldestKnownUnixMillis <= cutoffUnixMillis {
+		return nil, nil
+	}
+	ids := make([]string, 0)
+	seen := make(map[string]struct{})
+	pendingEmbeddingMessageIDs := make([]string, 0, emailEmbeddingBatchSize)
+	pageToken := ""
+	queryBeforeSeconds := oldestKnownUnixMillis / 1000
+	if queryBeforeSeconds <= 0 {
+		return nil, nil
+	}
+	flushPendingEmbeddingMessages := func() {
+		if len(pendingEmbeddingMessageIDs) == 0 {
+			return
+		}
+		a.refreshEmailEmbeddingsForMessageIDsInBackground("email_sync_window_backfill", pendingEmbeddingMessageIDs, nil)
+		pendingEmbeddingMessageIDs = pendingEmbeddingMessageIDs[:0]
+	}
+	for {
+		params := url.Values{}
+		params.Set("includeSpamTrash", "true")
+		params.Set("maxResults", "100")
+		params.Set("q", fmt.Sprintf("before:%d", queryBeforeSeconds))
+		if pageToken != "" {
+			params.Set("pageToken", pageToken)
+		}
+		var response gmailMessageListResponse
+		if _, err := a.doGmailJSONRequest(http.MethodGet, "/users/me/messages", params, nil, &response); err != nil {
+			return nil, err
+		}
+		pageHasMessagesWithinRange := false
+		for _, message := range response.Messages {
+			if _, ok := seen[message.ID]; ok || strings.TrimSpace(message.ID) == "" {
+				continue
+			}
+			fetchedMessage, err := a.fetchGmailMessage(message.ID)
+			if err != nil {
+				return nil, err
+			}
+			internalDateUnix, _ := strconv.ParseInt(strings.TrimSpace(fetchedMessage.InternalDate), 10, 64)
+			if internalDateUnix >= oldestKnownUnixMillis {
+				continue
+			}
+			if internalDateUnix < cutoffUnixMillis {
+				continue
+			}
+			pageHasMessagesWithinRange = true
+			if _, err := a.upsertSyncedEmail(fetchedMessage); err != nil {
+				return nil, err
+			}
+			seen[fetchedMessage.ID] = struct{}{}
+			ids = append(ids, fetchedMessage.ID)
+			pendingEmbeddingMessageIDs = append(pendingEmbeddingMessageIDs, fetchedMessage.ID)
+			if len(pendingEmbeddingMessageIDs) >= emailEmbeddingBatchSize {
+				flushPendingEmbeddingMessages()
+			}
+		}
+		if strings.TrimSpace(response.NextPageToken) == "" || !pageHasMessagesWithinRange {
+			break
+		}
+		pageToken = response.NextPageToken
+	}
+	flushPendingEmbeddingMessages()
+	return ids, nil
 }
 
 func (a *App) fetchGmailMessage(messageID string) (gmailMessageResource, error) {
@@ -518,33 +585,51 @@ func (a *App) markSyncedEmailDeleted(messageID string) error {
 	if _, err := tx.Exec(`UPDATE synced_emails SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP, sync_updated_at = CURRENT_TIMESTAMP WHERE message_id = ?`, messageID); err != nil {
 		return err
 	}
-	rows, err := tx.Query(`SELECT id FROM email_embeddings WHERE message_id = ?`, messageID)
-	if err != nil {
-		return err
-	}
-	embeddingIDs := make([]int64, 0)
-	for rows.Next() {
-		var embeddingID int64
-		if err := rows.Scan(&embeddingID); err != nil {
-			rows.Close()
-			return err
-		}
-		embeddingIDs = append(embeddingIDs, embeddingID)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return err
-	}
-	rows.Close()
-	for _, embeddingID := range embeddingIDs {
-		if _, err := tx.Exec(`DELETE FROM email_embedding_index WHERE embedding_id = ?`, embeddingID); err != nil {
-			return err
-		}
-	}
 	if _, err := tx.Exec(`DELETE FROM email_embeddings WHERE message_id = ?`, messageID); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+func (a *App) reconcileSyncedEmailsWithinWindow(currentIDs []string, cutoffUnixMillis int64) ([]string, error) {
+	rows, err := a.db.Query(`SELECT message_id FROM synced_emails WHERE is_deleted = 0 AND internal_date_unix >= ?`, cutoffUnixMillis)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keep := make(map[string]struct{}, len(currentIDs))
+	for _, id := range currentIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		keep[id] = struct{}{}
+	}
+	deletedIDs := make([]string, 0)
+	for rows.Next() {
+		var messageID string
+		if err := rows.Scan(&messageID); err != nil {
+			return nil, err
+		}
+		messageID = strings.TrimSpace(messageID)
+		if messageID == "" {
+			continue
+		}
+		if _, ok := keep[messageID]; ok {
+			continue
+		}
+		deletedIDs = append(deletedIDs, messageID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for _, messageID := range deletedIDs {
+		if err := a.markSyncedEmailDeleted(messageID); err != nil {
+			return nil, err
+		}
+	}
+	return deletedIDs, nil
 }
 
 func (a *App) pruneSyncedEmailsOutsideWindow(currentIDs []string) ([]string, error) {

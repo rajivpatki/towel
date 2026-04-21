@@ -29,6 +29,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc(a.config.APIPrefix+"/development/email-sync/status", a.requireAuth(a.handleEmailSyncStatus))
 	mux.HandleFunc(a.config.APIPrefix+"/development/email-sync/query", a.requireAuth(a.handleEmailSyncQuery))
 	mux.HandleFunc(a.config.APIPrefix+"/development/email-sync/trigger", a.requireAuth(a.handleEmailSyncTrigger))
+	mux.HandleFunc(a.config.APIPrefix+"/settings/email-sync", a.requireAuth(a.handleEmailSyncWindowSettings))
 	mux.HandleFunc(a.config.APIPrefix+"/settings/google-chat/status", a.requireAuth(a.handleGoogleChatStatus))
 	mux.HandleFunc(a.config.APIPrefix+"/settings/google-chat/restart", a.requireAuth(a.handleGoogleChatRestart))
 	mux.HandleFunc(a.config.APIPrefix+"/chat", a.requireAuth(a.handleChat))

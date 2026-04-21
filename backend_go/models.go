@@ -164,7 +164,12 @@ type SettingsOut struct {
 	SelectedAgentID *string               `json:"selected_agent_id"`
 	HasAPIKey       bool                  `json:"has_api_key"`
 	Agents          []SettingsAgent       `json:"agents"`
+	EmailSync       EmailSyncSettingsOut  `json:"email_sync"`
 	GoogleChat      GoogleChatSettingsOut `json:"google_chat"`
+}
+
+type EmailSyncSettingsOut struct {
+	SyncedWindowDays int `json:"synced_window_days"`
 }
 
 type GoogleChatSettingsOut struct {
@@ -198,6 +203,17 @@ type SettingsIn struct {
 	APIKey          string                `json:"api_key"`
 	Agents          []SettingsAgentInput  `json:"agents"`
 	GoogleChat      *GoogleChatSettingsIn `json:"google_chat,omitempty"`
+}
+
+type EmailSyncWindowSettingsIn struct {
+	SyncedWindowDays int `json:"synced_window_days"`
+}
+
+type EmailSyncWindowSettingsOut struct {
+	Success          bool            `json:"success"`
+	Action           string          `json:"action"`
+	SyncedWindowDays int             `json:"synced_window_days"`
+	Sync             EmailSyncStatus `json:"sync"`
 }
 
 type GoogleChatSettingsIn struct {

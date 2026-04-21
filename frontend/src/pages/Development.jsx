@@ -311,15 +311,10 @@ function Development({ initialSyncStatus, onStatusChange }) {
           spellCheck="false"
         />
 
-        <div className="info-box development-query-hints">
-          <p>Only single read-only <code>SELECT</code>, <code>WITH</code>, <code>PRAGMA</code>, or <code>EXPLAIN</code> statements are allowed.</p>
-        </div>
-
         <div className="development-inline-results">
           <div className="development-inline-results-header">
             <div>
               <h4>Results</h4>
-              <p className="development-section-copy">Query results render inline with the SQL console and include the sync context returned by the backend.</p>
             </div>
             {queryResult ? <span className="status-pill ok">{`${queryResult.row_count} rows`}</span> : null}
           </div>
