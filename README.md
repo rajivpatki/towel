@@ -45,6 +45,16 @@ iwr https://raw.githubusercontent.com/rajivpatki/towel/main/install.yml -OutFile
 
 This is the same pattern the installer uses, except it also tries to launch your browser automatically.
 
+If you want a native Windows installer artifact instead of running the script directly, build the Inno Setup package:
+
+```powershell
+.\packaging\windows\build-installer.ps1
+```
+
+This generates a Windows setup executable under `packaging\dist\`.
+
+GitHub Actions can also build this installer. The workflow at `.github/workflows/build-installers.yml` uploads the `.exe` as an artifact on every push to `main` and on manual runs.
+
 ### Linux
 
 Use `install_linux.sh`.
@@ -99,6 +109,18 @@ If you already have Docker installed, download the Compose file and run it direc
 curl -L https://raw.githubusercontent.com/rajivpatki/towel/main/install.yml -o docker-compose.yml
 docker compose up -d
 ```
+
+If you want a native macOS installer artifact instead of asking users to run the shell script directly, build the package on a Mac:
+
+```bash
+./packaging/macos/build-installer.sh
+```
+
+This generates a `.pkg` under `packaging/dist/` that installs `Towel.app` into `/Applications`.
+
+For distribution outside local testing, sign and notarize the macOS app/package with your Apple Developer identities.
+
+GitHub Actions can also build this installer. The workflow at `.github/workflows/build-installers.yml` uploads the `.pkg` as an artifact on every push to `main` and on manual runs.
 
 ## Run Towel with Docker Compose
 

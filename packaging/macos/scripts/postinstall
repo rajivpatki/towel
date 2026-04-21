@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+
+APP_PATH="/Applications/Towel.app"
+
+if [[ -d "$APP_PATH" ]]; then
+  chmod 755 "$APP_PATH/Contents/MacOS/Towel"
+  chmod 755 "$APP_PATH/Contents/Resources/start_towel.command"
+  chmod 755 "$APP_PATH/Contents/Resources/stop_towel.command"
+  chmod 755 "$APP_PATH/Contents/Resources/install_mac.sh"
+fi
+
+exit 0

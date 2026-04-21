@@ -1,0 +1,63 @@
+name: Build Installers
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-installer:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          VERSION="0.1.0-main.${GITHUB_RUN_NUMBER}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: powershell
+        run: .\packaging\windows\build-installer.ps1 -Version '${{ steps.version.outputs.version }}'
+
+      - name: Upload Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: towel-windows-installer
+          path: packaging/dist/towel-windows-${{ steps.version.outputs.version }}.exe
+          if-no-files-found: error
+
+  build-macos-installer:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          VERSION="0.1.0-main.${GITHUB_RUN_NUMBER}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS installer
+        shell: bash
+        run: ./packaging/macos/build-installer.sh '${{ steps.version.outputs.version }}'
+
+      - name: Upload macOS installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: towel-macos-installer
+          path: packaging/dist/towel-macos-${{ steps.version.outputs.version }}.pkg
+          if-no-files-found: error
