@@ -12,7 +12,7 @@ import (
 
 const (
 	defaultEmailSyncWindowDays = 365
-	emailSyncInterval          = 5 * time.Minute
+	emailSyncInterval          = 30 * time.Second
 	emailSyncFreshnessMaxAge   = 2 * time.Minute
 )
 

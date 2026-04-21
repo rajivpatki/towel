@@ -270,7 +270,7 @@ function Development({ initialSyncStatus, onStatusChange }) {
 
         {syncStatus?.last_sync_error ? (
           <div className="alert error" style={{ marginTop: '1rem' }}>
-            {syncStatus.last_sync_error}
+            <strong>Last seen sync error (may not persist):</strong>&nbsp;{syncStatus.last_sync_error}
           </div>
         ) : null}
 
