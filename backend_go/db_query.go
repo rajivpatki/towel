@@ -103,7 +103,7 @@ func (a *App) executeQueryDBTool(arguments map[string]any) (string, error) {
 	}
 	response, err := a.executeSafeDBQuery(sqlText, limit)
 	if err != nil {
-		return "", err
+		return "", rewriteDBQueryError(err)
 	}
 	payload := map[string]any{
 		"ok":        true,
@@ -239,6 +239,18 @@ func validateSafeDBQuery(rawSQL string) error {
 	return nil
 }
 
+func rewriteDBQueryError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.TrimSpace(err.Error())
+	lower := strings.ToLower(message)
+	if strings.Contains(lower, "no such column: json_each.value") || strings.Contains(lower, "no such column: json_each.key") {
+		return fmt.Errorf("%s. When querying JSON arrays, join `json_each(<column>)` in the FROM clause and reference an alias such as `label.value` instead of bare `json_each.value`. Example: `EXISTS (SELECT 1 FROM json_each(synced_emails.label_ids) AS label WHERE label.value = 'INBOX')`", message)
+	}
+	return err
+}
+
 func normalizeSQLValue(value any) any {
 	switch typed := value.(type) {
 	case nil:
@@ -329,6 +341,8 @@ func (a *App) buildQueryDBToolDefinition() GmailToolDefinition {
 			"Allowed views: synced_email_labels_with_names (joins message-label pairs with human-readable label names - use this for label queries instead of raw tables).",
 			"Key synced_emails columns: message_id, thread_id, history_id, subject, subject_normalized, snippet, from_name, from_email, from_raw, reply_to, to_addresses, cc_addresses, bcc_addresses, delivered_to, date_header, internal_date_unix, internal_date, size_estimate, body_text, body_html, body_size_estimate, attachment_count, attachment_names, attachment_total_size, label_ids, list_unsubscribe, list_unsubscribe_post, list_id, precedence_header, auto_submitted_header, feedback_id, in_reply_to, references_header, is_unread, is_starred, is_important, is_in_inbox, is_in_spam, is_in_trash, has_attachments, is_deleted, deleted_at, sync_updated_at.",
 			"Key email_embeddings columns: id, message_id, thread_id, chunk_index, embedding_text, embedding_vector, subject, from_email, internal_date_unix, has_attachments, is_in_trash, is_in_spam, embedding_provider, embedding_model, embedding_dimensions, source_sync_updated_at, indexed_at, updated_at.",
+			"For JSON array columns such as `label_ids` or `attachment_names`, use `json_each(<column>)` in the FROM clause or a correlated subquery and reference an alias like `label.value`; do not reference bare `json_each.value` without joining `json_each(...)` first.",
+			"Example label filter: `SELECT message_id, subject FROM synced_emails WHERE EXISTS (SELECT 1 FROM json_each(synced_emails.label_ids) AS label WHERE label.value = 'INBOX') ORDER BY internal_date_unix DESC`.",
 			fmt.Sprintf("This tool automatically applies an outer row cap of %d when `limit` is omitted. For ordinary SELECT or WITH queries, the runtime enforces it as `SELECT * FROM (<your_sql>) LIMIT %d`, so you usually do not need to add a raw LIMIT yourself unless you want custom pagination or a smaller page.", defaultQueryDBToolLimit, defaultQueryDBToolLimit),
 			"If you need pagination, write the SQL explicitly with LIMIT and OFFSET in your query and optionally also pass `limit` so the tool output budget matches your intended page size.",
 			"Keep queries read-only and relevant to the synced email cache. Prefer WHERE clauses, deterministic ORDER BY clauses, and pagination when result sets may be large.",
