@@ -41,6 +41,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc(a.config.APIPrefix+"/history", a.requireAuth(a.handleHistory))
 	mux.HandleFunc(a.config.APIPrefix+"/memories", a.requireAuth(a.handleMemories))
 	mux.HandleFunc(a.config.APIPrefix+"/memories/", a.requireAuth(a.handleMemoryItem))
+	mux.HandleFunc(a.config.APIPrefix+"/scheduled-tasks", a.requireAuth(a.handleScheduledTasks))
+	mux.HandleFunc(a.config.APIPrefix+"/scheduled-tasks/", a.requireAuth(a.handleScheduledTaskItem))
 	mux.HandleFunc(a.config.APIPrefix+"/settings", a.requireAuth(a.handleSettings))
 	mux.HandleFunc(a.config.APIPrefix+"/profile/image", a.requireAuth(a.handleProfileImage))
 	return a.withCORS(mux)

@@ -41,6 +41,12 @@ func buildChatSystemPrompt() string {
 - Format responses to messages from Google Chat for the interface - markdown is not supported and tables need to be formatted as plain text.
 
 
+## Scheduled tasks:
+A powerful feature where you can execute agent instructions on each email received or updated. This functionality helps you clean up email in the future so the user does not have to prompt for it.
+- Create tasks when you identify patterns in the user's request or email content that would benefit from automated handling.
+- Use this feature profusely to expand the width of your capabilities.
+
+
 ## Notes:
 - Gmail has a set of default labels. Do not treat these as user labels or even labels at all from the user's perspective. The user does not know that in a database these are used as labels:
 	- state: (INBOX, SENT, DRAFT, TRASH, SPAM, UNREAD, STARRED, IMPORTANT, CHAT)
@@ -54,23 +60,79 @@ func buildChatSystemPrompt() string {
 	return prompt
 }
 
+func buildScheduledTaskSystemPrompt() string {
+	prompt := strings.TrimSpace(`You are Towel running an autonomous scheduled email task after a mailbox refresh.
+
+
+## Execution model:
+- This run has no user interface and no follow-up interaction.
+- Never ask for confirmation, clarification, approval, or a later reply.
+- If the task instruction calls for concrete hard actions, perform them now using the available tools.
+- Work only on the updated emails included in the trigger context unless adjacent context is required to complete the task correctly.
+- Prefer bulk Gmail actions when appropriate.
+- Do not invent tool results.
+
+
+## Tool policy:
+- You have access to the full Towel toolset, including Gmail tools, query_db, semantic_email_search, memories, and scheduled-task tools.
+- Use query_db and semantic_email_search for efficient analysis, but use Gmail tools for authoritative inspection or mailbox mutations.
+- When the task instruction implies action, do not stop at analysis.
+
+
+## Response style:
+- Return a concise execution summary describing what you did, what you found, and any important limitation encountered.
+- Do not frame the summary as a pending next step or request for user input.`)
+
+	if mdContent, err := os.ReadFile("prompt_helpers/gmail_search_operations.md"); err == nil {
+		prompt += "\n\n" + string(mdContent)
+	}
+	return prompt
+}
+
+func (a *App) resolveSelectedAgentAndCredential() (AgentDefinition, string, error) {
+	state, err := a.getSetupState()
+	if err != nil {
+		return AgentDefinition{}, "", err
+	}
+	if state.SelectedAgentID == nil || strings.TrimSpace(*state.SelectedAgentID) == "" {
+		return AgentDefinition{}, "", errors.New("LLM not configured. Please complete setup first.")
+	}
+	agent, ok := getAgentDefinition(*state.SelectedAgentID)
+	if !ok {
+		return AgentDefinition{}, "", fmt.Errorf("Unsupported agent: %s", *state.SelectedAgentID)
+	}
+	credential, err := a.getLLMCredential(agent)
+	if err != nil {
+		return AgentDefinition{}, "", err
+	}
+	return agent, credential, nil
+}
+
+func (a *App) runAgentTurn(ctx context.Context, systemPrompt string, history []ConversationMessage, emitProgress func(string, []string)) (string, []string, error) {
+	agent, credential, err := a.resolveSelectedAgentAndCredential()
+	if err != nil {
+		return "", nil, err
+	}
+	if agentUsesGoogleOAuth(agent) {
+		return a.callGeminiLLM(ctx, agent, credential, systemPrompt, history, emitProgress)
+	}
+	messages := make([]map[string]any, 0, len(history)+1)
+	messages = append(messages, map[string]any{"role": "system", "content": systemPrompt})
+	for _, item := range history {
+		role := strings.TrimSpace(item.Role)
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		messages = append(messages, map[string]any{"role": role, "content": item.Content})
+	}
+	return a.callLLM(ctx, agent, credential, messages, emitProgress)
+}
+
 func (a *App) processChatMessage(ctx context.Context, conversationID string, userMessage string, emitProgress func(string, []string)) (ChatMessageOut, error) {
 	if err := ctx.Err(); err != nil {
 		return ChatMessageOut{}, err
 	}
-	state, err := a.getSetupState()
-	if err != nil {
-		return ChatMessageOut{}, err
-	}
-	if state.SelectedAgentID == nil || strings.TrimSpace(*state.SelectedAgentID) == "" {
-		return ChatMessageOut{}, errors.New("LLM not configured. Please complete setup first.")
-	}
-	agent, ok := getAgentDefinition(*state.SelectedAgentID)
-	if !ok {
-		return ChatMessageOut{}, fmt.Errorf("Unsupported agent: %s", *state.SelectedAgentID)
-	}
-	credential, err := a.getLLMCredential(agent)
-	if err != nil {
+	if _, _, err := a.resolveSelectedAgentAndCredential(); err != nil {
 		return ChatMessageOut{}, err
 	}
 	a.maybeSyncEmailsBeforeChat(userMessage)
@@ -88,22 +150,7 @@ func (a *App) processChatMessage(ctx context.Context, conversationID string, use
 	}
 
 	systemPrompt := buildChatSystemPrompt()
-	assistantMessage := ""
-	actions := make([]string, 0)
-	if agentUsesGoogleOAuth(agent) {
-		assistantMessage, actions, err = a.callGeminiLLM(ctx, agent, credential, systemPrompt, history, emitProgress)
-	} else {
-		messages := make([]map[string]any, 0, len(history)+1)
-		messages = append(messages, map[string]any{"role": "system", "content": systemPrompt})
-		for _, item := range history {
-			role := strings.TrimSpace(item.Role)
-			if role != "user" && role != "assistant" {
-				continue
-			}
-			messages = append(messages, map[string]any{"role": role, "content": item.Content})
-		}
-		assistantMessage, actions, err = a.callLLM(ctx, agent, credential, messages, emitProgress)
-	}
+	assistantMessage, actions, err := a.runAgentTurn(ctx, systemPrompt, history, emitProgress)
 	if err != nil {
 		return ChatMessageOut{}, fmt.Errorf("Chat processing failed: %v", err)
 	}
@@ -360,6 +407,14 @@ func (a *App) executeToolCall(call llmToolCall) (string, string, string) {
 		resultJSON, execErr = a.executeCreateMemoryTool(arguments)
 	} else if toolName == "search_memories" {
 		resultJSON, execErr = a.executeSearchMemoriesTool(arguments)
+	} else if toolName == "create_scheduled_task" {
+		resultJSON, execErr = a.executeCreateScheduledTaskTool(arguments)
+	} else if toolName == "update_scheduled_task" {
+		resultJSON, execErr = a.executeUpdateScheduledTaskTool(arguments)
+	} else if toolName == "search_scheduled_tasks" {
+		resultJSON, execErr = a.executeSearchScheduledTasksTool(arguments)
+	} else if toolName == "delete_scheduled_task" {
+		resultJSON, execErr = a.executeDeleteScheduledTaskTool(arguments)
 	}
 
 	if execErr != nil {

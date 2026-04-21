@@ -43,6 +43,7 @@ type EmailSyncStatus struct {
 }
 
 type emailSyncResult struct {
+	StartHistoryID     string
 	CursorHistoryID    string
 	LastHistoryID      string
 	Metrics            emailSyncMetrics
@@ -201,6 +202,7 @@ func (a *App) runEmailSync(mode string, reason string) error {
 	if err := a.syncEmailEmbeddingsForSyncResult("email_sync_"+mode, result); err != nil && !errors.Is(err, errEmailEmbeddingAlreadyRunning) {
 		log.Printf("email sync warning: embedding refresh failed after sync: mode=%s reason=%s mailbox=%s err=%v", mode, reason, mailboxEmail, err)
 	}
+	a.dispatchScheduledTaskRunsInBackground(mode, reason, result)
 	log.Printf("email sync completed: mode=%s reason=%s mailbox=%s messages=%d oldest=%s newest=%s cursor=%s", mode, reason, mailboxEmail, result.Metrics.MessageCount, result.Metrics.OldestMessageAt, result.Metrics.NewestMessageAt, result.CursorHistoryID)
 	return nil
 }
@@ -222,6 +224,7 @@ func (a *App) performFullEmailSync() (emailSyncResult, error) {
 		return emailSyncResult{}, err
 	}
 	return emailSyncResult{
+		StartHistoryID:     "",
 		CursorHistoryID:    cursorHistoryID,
 		LastHistoryID:      cursorHistoryID,
 		Metrics:            metrics,
@@ -283,6 +286,7 @@ func (a *App) performPartialEmailSync(cursor string) (emailSyncResult, error) {
 		lastHistoryID = strings.TrimSpace(cursor)
 	}
 	return emailSyncResult{
+		StartHistoryID:     strings.TrimSpace(cursor),
 		CursorHistoryID:    lastHistoryID,
 		LastHistoryID:      lastHistoryID,
 		Metrics:            metrics,

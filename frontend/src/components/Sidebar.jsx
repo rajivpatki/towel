@@ -62,6 +62,15 @@ function SparklesIcon() {
   )
 }
 
+function ClockIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v6l4 2" />
+    </svg>
+  )
+}
+
 function NewChatIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -260,6 +269,11 @@ function Sidebar({ status }) {
         <NavLink to="/personalise" className={({ isActive }) => isActive ? 'nav-link personalise-link active' : 'nav-link personalise-link'}>
           <div className="nav-icon"><SparklesIcon /></div>
           <span>Personalise</span>
+        </NavLink>
+
+        <NavLink to="/scheduled-tasks" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>
+          <div className="nav-icon"><ClockIcon /></div>
+          <span>Scheduled Tasks</span>
         </NavLink>
 
         <NavLink to="/development" className={({ isActive }) => isActive ? 'nav-link active' : 'nav-link'}>

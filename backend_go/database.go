@@ -42,6 +42,25 @@ func (a *App) initDB() error {
 			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 		);`,
+		`CREATE TABLE IF NOT EXISTS scheduled_tasks (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			title TEXT NOT NULL,
+			instruction TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			require_in_inbox INTEGER NOT NULL DEFAULT 0,
+			label_names_json TEXT,
+			label_names_search_text TEXT,
+			last_run_started_at TEXT,
+			last_run_completed_at TEXT,
+			last_run_status TEXT,
+			last_run_message TEXT,
+			last_run_error TEXT,
+			last_run_matched_messages INTEGER NOT NULL DEFAULT 0,
+			last_run_history_start_id TEXT,
+			last_run_history_end_id TEXT,
+			created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);`,
 		`CREATE TABLE IF NOT EXISTS custom_agents (
 			agent_id TEXT PRIMARY KEY,
 			provider TEXT NOT NULL,
@@ -75,6 +94,8 @@ func (a *App) initDB() error {
 			FOREIGN KEY(conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
 		);`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_secret_records_key ON secret_records(key);`,
+		`CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_enabled_updated_at ON scheduled_tasks(enabled, updated_at DESC, id DESC);`,
+		`CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_updated_at ON scheduled_tasks(updated_at DESC, id DESC);`,
 		`CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_id_id ON conversation_messages(conversation_id, id);`,
 		`CREATE TABLE IF NOT EXISTS user_sessions (
 			id TEXT PRIMARY KEY,

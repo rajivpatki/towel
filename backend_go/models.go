@@ -44,6 +44,10 @@ type App struct {
 	memoryEmbeddingPendingMemoryIDs  map[int64]struct{}
 	memoryEmbeddingPendingDeletedIDs map[int64]struct{}
 
+	scheduledTaskMu      sync.Mutex
+	scheduledTaskRunning map[int64]bool
+	scheduledTaskPending map[int64]scheduledTaskRunRequest
+
 	googleChatMu     sync.Mutex
 	googleChatCancel context.CancelFunc
 	googleChatRunID  int64
