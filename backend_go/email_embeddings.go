@@ -1325,10 +1325,10 @@ func (a *App) rebuildEmailEmbeddingIndex() error {
 			hasAttachments,
 			isInTrash,
 			isInSpam,
-			nullIfEmpty(strings.ToLower(fromEmail)),
+			strings.ToLower(strings.TrimSpace(fromEmail)),
 			messageID,
 			threadID,
-			nullIfEmpty(subject),
+			strings.TrimSpace(subject),
 			embeddingText,
 		); err != nil {
 			return err

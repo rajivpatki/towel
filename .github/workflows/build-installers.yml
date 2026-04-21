@@ -53,7 +53,10 @@ jobs:
 
       - name: Build macOS installer
         shell: bash
-        run: ./packaging/macos/build-installer.sh '${{ steps.version.outputs.version }}'
+        run: |
+          chmod +x ./packaging/macos/build-installer.sh
+          chmod +x ./packaging/macos/scripts/postinstall
+          ./packaging/macos/build-installer.sh '${{ steps.version.outputs.version }}'
 
       - name: Upload macOS installer artifact
         uses: actions/upload-artifact@v4

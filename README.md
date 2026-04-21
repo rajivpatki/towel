@@ -113,6 +113,7 @@ docker compose up -d
 If you want a native macOS installer artifact instead of asking users to run the shell script directly, build the package on a Mac:
 
 ```bash
+chmod +x ./packaging/macos/build-installer.sh
 ./packaging/macos/build-installer.sh
 ```
 

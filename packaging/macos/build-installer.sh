@@ -36,6 +36,7 @@ chmod 755 "$APP_DIR/Contents/MacOS/Towel"
 chmod 755 "$APP_DIR/Contents/Resources/start_towel.command"
 chmod 755 "$APP_DIR/Contents/Resources/stop_towel.command"
 chmod 755 "$APP_DIR/Contents/Resources/install_mac.sh"
+chmod 755 "$SCRIPT_DIR/scripts/postinstall"
 
 if [[ -n "$APP_SIGN_IDENTITY" ]]; then
   codesign --force --timestamp --sign "$APP_SIGN_IDENTITY" "$APP_DIR"
