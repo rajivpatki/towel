@@ -226,20 +226,12 @@ func (a *App) doGmailJSONRequest(method string, apiPath string, params url.Value
 	return statusCode, nil
 }
 
-func (a *App) syncRecentMessagesWindow(windowDays int) ([]string, string, error) {
+func (a *App) syncRecentMessagesWindow(windowDays int, embeddingReason string) ([]string, string, error) {
 	ids := make([]string, 0)
 	seen := make(map[string]struct{})
-	pendingEmbeddingMessageIDs := make([]string, 0, emailEmbeddingBatchSize)
 	cutoffUnixMillis := emailSyncCutoffUnixMillis(windowDays)
 	pageToken := ""
 	cursorHistoryID := ""
-	flushPendingEmbeddingMessages := func() {
-		if len(pendingEmbeddingMessageIDs) == 0 {
-			return
-		}
-		a.refreshEmailEmbeddingsForMessageIDsInBackground("email_sync_full_incremental", pendingEmbeddingMessageIDs, nil)
-		pendingEmbeddingMessageIDs = pendingEmbeddingMessageIDs[:0]
-	}
 	for {
 		params := url.Values{}
 		params.Set("includeSpamTrash", "true")
@@ -271,40 +263,30 @@ func (a *App) syncRecentMessagesWindow(windowDays int) ([]string, string, error)
 			if _, err := a.upsertSyncedEmail(fetchedMessage); err != nil {
 				return nil, "", err
 			}
+			if err := a.enqueueEmailEmbeddingUpsert(fetchedMessage.ID, embeddingReason); err != nil {
+				return nil, "", err
+			}
 			seen[fetchedMessage.ID] = struct{}{}
 			ids = append(ids, fetchedMessage.ID)
-			pendingEmbeddingMessageIDs = append(pendingEmbeddingMessageIDs, fetchedMessage.ID)
-			if len(pendingEmbeddingMessageIDs) >= emailEmbeddingBatchSize {
-				flushPendingEmbeddingMessages()
-			}
 		}
 		if strings.TrimSpace(response.NextPageToken) == "" || !pageHasRecentMessages {
 			break
 		}
 		pageToken = response.NextPageToken
 	}
-	flushPendingEmbeddingMessages()
 	return ids, cursorHistoryID, nil
 }
 
-func (a *App) syncOlderMessagesBeforeDate(oldestKnownUnixMillis int64, cutoffUnixMillis int64) ([]string, error) {
+func (a *App) syncOlderMessagesBeforeDate(oldestKnownUnixMillis int64, cutoffUnixMillis int64, embeddingReason string) ([]string, error) {
 	if oldestKnownUnixMillis <= 0 || cutoffUnixMillis <= 0 || oldestKnownUnixMillis <= cutoffUnixMillis {
 		return nil, nil
 	}
 	ids := make([]string, 0)
 	seen := make(map[string]struct{})
-	pendingEmbeddingMessageIDs := make([]string, 0, emailEmbeddingBatchSize)
 	pageToken := ""
 	queryBeforeSeconds := oldestKnownUnixMillis / 1000
 	if queryBeforeSeconds <= 0 {
 		return nil, nil
-	}
-	flushPendingEmbeddingMessages := func() {
-		if len(pendingEmbeddingMessageIDs) == 0 {
-			return
-		}
-		a.refreshEmailEmbeddingsForMessageIDsInBackground("email_sync_window_backfill", pendingEmbeddingMessageIDs, nil)
-		pendingEmbeddingMessageIDs = pendingEmbeddingMessageIDs[:0]
 	}
 	for {
 		params := url.Values{}
@@ -338,19 +320,17 @@ func (a *App) syncOlderMessagesBeforeDate(oldestKnownUnixMillis int64, cutoffUni
 			if _, err := a.upsertSyncedEmail(fetchedMessage); err != nil {
 				return nil, err
 			}
+			if err := a.enqueueEmailEmbeddingUpsert(fetchedMessage.ID, embeddingReason); err != nil {
+				return nil, err
+			}
 			seen[fetchedMessage.ID] = struct{}{}
 			ids = append(ids, fetchedMessage.ID)
-			pendingEmbeddingMessageIDs = append(pendingEmbeddingMessageIDs, fetchedMessage.ID)
-			if len(pendingEmbeddingMessageIDs) >= emailEmbeddingBatchSize {
-				flushPendingEmbeddingMessages()
-			}
 		}
 		if strings.TrimSpace(response.NextPageToken) == "" || !pageHasMessagesWithinRange {
 			break
 		}
 		pageToken = response.NextPageToken
 	}
-	flushPendingEmbeddingMessages()
 	return ids, nil
 }
 
@@ -585,7 +565,7 @@ func (a *App) markSyncedEmailDeleted(messageID string) error {
 	if _, err := tx.Exec(`UPDATE synced_emails SET is_deleted = 1, deleted_at = CURRENT_TIMESTAMP, sync_updated_at = CURRENT_TIMESTAMP WHERE message_id = ?`, messageID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM email_embeddings WHERE message_id = ?`, messageID); err != nil {
+	if err := deleteEmailEmbeddingByMessageTx(tx, messageID); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -2,9 +2,6 @@ package main
 
 import (
 	"time"
-
-	_ "modernc.org/sqlite"
-	_ "modernc.org/sqlite/vec"
 )
 
 const (

@@ -36,6 +36,10 @@ type EmailSyncStatus struct {
 	EmbeddingCount                int    `json:"embedding_count"`
 	EmbeddingProvider             string `json:"embedding_provider,omitempty"`
 	EmbeddingModel                string `json:"embedding_model,omitempty"`
+	EmbeddingQueuedCount          int    `json:"embedding_queued_count"`
+	EmbeddingInFlightCount        int    `json:"embedding_in_flight_count"`
+	LastEmbeddedAt                string `json:"last_embedded_at,omitempty"`
+	EmbeddingLagSeconds           int64  `json:"embedding_lag_seconds,omitempty"`
 	OldestMessageAt               string `json:"oldest_message_at,omitempty"`
 	NewestMessageAt               string `json:"newest_message_at,omitempty"`
 	OldestMessageInternalDateUnix int64  `json:"oldest_message_internal_date_unix,omitempty"`
@@ -202,9 +206,6 @@ func (a *App) runEmailSync(mode string, reason string) error {
 	if err := a.markEmailSyncSucceeded(mode, reason, mailboxEmail, result); err != nil {
 		return err
 	}
-	if err := a.syncEmailEmbeddingsForSyncResult("email_sync_"+mode, result); err != nil && !errors.Is(err, errEmailEmbeddingAlreadyRunning) {
-		log.Printf("email sync warning: embedding refresh failed after sync: mode=%s reason=%s mailbox=%s err=%v", mode, reason, mailboxEmail, err)
-	}
 	a.dispatchScheduledTaskRunsInBackground(mode, reason, result)
 	log.Printf("email sync completed: mode=%s reason=%s mailbox=%s messages=%d oldest=%s newest=%s cursor=%s", mode, reason, mailboxEmail, result.Metrics.MessageCount, result.Metrics.OldestMessageAt, result.Metrics.NewestMessageAt, result.CursorHistoryID)
 	return nil
@@ -218,7 +219,7 @@ func (a *App) performFullEmailSync() (emailSyncResult, error) {
 	if err != nil {
 		return emailSyncResult{}, err
 	}
-	messageIDs, cursorHistoryID, err := a.syncRecentMessagesWindow(windowDays)
+	messageIDs, cursorHistoryID, err := a.syncRecentMessagesWindow(windowDays, "email_sync_full")
 	if err != nil {
 		return emailSyncResult{}, err
 	}
@@ -230,13 +231,14 @@ func (a *App) performFullEmailSync() (emailSyncResult, error) {
 	if err != nil {
 		return emailSyncResult{}, err
 	}
+	a.waitForEmailEmbeddingDrain()
 	return emailSyncResult{
 		StartHistoryID:     "",
 		CursorHistoryID:    cursorHistoryID,
 		LastHistoryID:      cursorHistoryID,
 		SyncedWindowDays:   windowDays,
 		Metrics:            metrics,
-		UpsertedMessageIDs: append([]string(nil), messageIDs...),
+		UpsertedMessageIDs: nil,
 		DeletedMessageIDs:  append([]string(nil), deletedMessageIDs...),
 	}, nil
 }
@@ -248,14 +250,6 @@ func (a *App) performPartialEmailSync(cursor string) (emailSyncResult, error) {
 	changes, lastHistoryID, err := a.listGmailHistoryChanges(cursor)
 	if err != nil {
 		return emailSyncResult{}, err
-	}
-	pendingEmbeddingMessageIDs := make([]string, 0, emailEmbeddingBatchSize)
-	flushPendingEmbeddingMessages := func() {
-		if len(pendingEmbeddingMessageIDs) == 0 {
-			return
-		}
-		a.refreshEmailEmbeddingsForMessageIDsInBackground("email_sync_partial_incremental", pendingEmbeddingMessageIDs, nil)
-		pendingEmbeddingMessageIDs = pendingEmbeddingMessageIDs[:0]
 	}
 	upsertIDs := changes.UpsertIDs()
 	for _, messageID := range upsertIDs {
@@ -274,13 +268,11 @@ func (a *App) performPartialEmailSync(cursor string) (emailSyncResult, error) {
 		if _, upsertErr := a.upsertSyncedEmail(message); upsertErr != nil {
 			return emailSyncResult{}, upsertErr
 		}
-		delete(changes.Deleted, messageID)
-		pendingEmbeddingMessageIDs = append(pendingEmbeddingMessageIDs, messageID)
-		if len(pendingEmbeddingMessageIDs) >= emailEmbeddingBatchSize {
-			flushPendingEmbeddingMessages()
+		if err := a.enqueueEmailEmbeddingUpsert(messageID, "email_sync_partial"); err != nil {
+			return emailSyncResult{}, err
 		}
+		delete(changes.Deleted, messageID)
 	}
-	flushPendingEmbeddingMessages()
 	for _, messageID := range changes.DeletedIDs() {
 		if err := a.markSyncedEmailDeleted(messageID); err != nil {
 			return emailSyncResult{}, err
@@ -354,10 +346,11 @@ func (a *App) backfillConfiguredEmailSyncWindow(windowDays int) (emailSyncResult
 			Metrics:          metrics,
 		}, nil
 	}
-	messageIDs, err := a.syncOlderMessagesBeforeDate(metrics.OldestMessageInternalDateUnix, cutoffUnixMillis)
+	_, err = a.syncOlderMessagesBeforeDate(metrics.OldestMessageInternalDateUnix, cutoffUnixMillis, "email_sync_backfill")
 	if err != nil {
 		return emailSyncResult{}, err
 	}
+	a.waitForEmailEmbeddingDrain()
 	updatedMetrics, err := a.getEmailSyncMetrics()
 	if err != nil {
 		return emailSyncResult{}, err
@@ -365,7 +358,7 @@ func (a *App) backfillConfiguredEmailSyncWindow(windowDays int) (emailSyncResult
 	return emailSyncResult{
 		SyncedWindowDays:   windowDays,
 		Metrics:            updatedMetrics,
-		UpsertedMessageIDs: append([]string(nil), messageIDs...),
+		UpsertedMessageIDs: nil,
 		DeletedMessageIDs:  nil,
 	}, nil
 }
@@ -490,12 +483,19 @@ func (a *App) getEmailSyncStatus() (EmailSyncStatus, error) {
 	status.EmbeddingCount = embeddingStats.Count
 	status.EmbeddingProvider = embeddingStats.Provider
 	status.EmbeddingModel = embeddingStats.Model
+	status.EmbeddingQueuedCount, status.EmbeddingInFlightCount, status.LastEmbeddedAt = a.getEmailEmbeddingQueueStatus()
+	if strings.TrimSpace(status.LastEmbeddedAt) != "" {
+		if lastEmbeddedAt, parseErr := time.Parse(time.RFC3339, status.LastEmbeddedAt); parseErr == nil {
+			status.EmbeddingLagSeconds = int64(time.Since(lastEmbeddedAt).Seconds())
+		}
+	}
 	return status, nil
 }
 
 func (a *App) resetEmailSyncStore() error {
 	a.emailSyncMu.Lock()
 	defer a.emailSyncMu.Unlock()
+	a.resetEmailEmbeddingQueueState()
 	tx, err := a.db.Begin()
 	if err != nil {
 		return err

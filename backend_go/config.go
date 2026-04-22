@@ -1,9 +1,7 @@
 package main
 
 import (
-	"context"
 	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"log"
 	"net/http"
@@ -14,10 +12,12 @@ import (
 	"sync"
 	"time"
 
-	sqliteDriver "modernc.org/sqlite"
+	sqliteVec "github.com/asg017/sqlite-vec-go-bindings/cgo"
+	sqliteDriver "github.com/mattn/go-sqlite3"
 )
 
 const (
+	sqliteDriverName        = "sqlite3_vec"
 	sqliteBusyTimeoutMillis = 10000
 	sqliteMaxOpenConns      = 8
 )
@@ -82,8 +82,8 @@ func newApp(config Config) (*App, error) {
 	if err := os.MkdirAll(filepath.Dir(config.DatabasePath), 0o755); err != nil {
 		return nil, err
 	}
-	registerSQLiteConnectionHook()
-	db, err := sql.Open("sqlite", config.DatabasePath)
+	registerSQLiteDriver()
+	db, err := sql.Open(sqliteDriverName, config.DatabasePath)
 	if err != nil {
 		return nil, err
 	}
@@ -97,13 +97,15 @@ func newApp(config Config) (*App, error) {
 		},
 		streamSessions: make(map[string]*streamSession),
 	}
+	app.emailEmbeddingCond = sync.NewCond(&app.emailEmbeddingMu)
+	app.emailEmbeddingPendingLimit = defaultEmailEmbeddingQueueSize
 	if err := app.initDB(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	appInstance = app
 	app.startEmailSyncLoop()
-	app.refreshEmailEmbeddingsInBackground("startup", false)
+	app.startEmailEmbeddingWorkers()
 	app.refreshMemoryEmbeddingsInBackground("startup", false)
 	if err := app.restartGoogleChatListener(); err != nil {
 		log.Printf("google chat listener not started: %v", err)
@@ -111,15 +113,16 @@ func newApp(config Config) (*App, error) {
 	return app, nil
 }
 
-func registerSQLiteConnectionHook() {
+func registerSQLiteDriver() {
 	sqliteConnectionHookOnce.Do(func() {
-		sqliteDriver.RegisterConnectionHook(func(conn sqliteDriver.ExecQuerierContext, dsn string) error {
-			return configureSQLiteConnection(conn)
+		sqliteVec.Auto()
+		sql.Register(sqliteDriverName, &sqliteDriver.SQLiteDriver{
+			ConnectHook: configureSQLiteConnection,
 		})
 	})
 }
 
-func configureSQLiteConnection(conn sqliteDriver.ExecQuerierContext) error {
+func configureSQLiteConnection(conn *sqliteDriver.SQLiteConn) error {
 	busyTimeout := strconv.Itoa(sqliteBusyTimeoutMillis)
 	for _, pragma := range []string{
 		`PRAGMA foreign_keys = ON;`,
@@ -127,7 +130,7 @@ func configureSQLiteConnection(conn sqliteDriver.ExecQuerierContext) error {
 		`PRAGMA journal_mode = WAL;`,
 		`PRAGMA synchronous = NORMAL;`,
 	} {
-		if _, err := conn.ExecContext(context.Background(), pragma, []driver.NamedValue{}); err != nil {
+		if _, err := conn.Exec(pragma, nil); err != nil {
 			return err
 		}
 	}

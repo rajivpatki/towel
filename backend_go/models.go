@@ -26,14 +26,17 @@ type App struct {
 	emailSyncMu      sync.Mutex
 	emailSyncRunning bool
 
-	emailEmbeddingMu                       sync.Mutex
-	emailEmbeddingRunning                  bool
-	emailEmbeddingPending                  bool
-	emailEmbeddingPendingReason            string
-	emailEmbeddingPendingReset             bool
-	emailEmbeddingPendingFullRescan        bool
-	emailEmbeddingPendingMessageIDs        map[string]struct{}
-	emailEmbeddingPendingDeletedMessageIDs map[string]struct{}
+	emailEmbeddingMu             sync.Mutex
+	emailEmbeddingCond           *sync.Cond
+	emailEmbeddingDBWriteMu      sync.Mutex
+	emailEmbeddingWorkersStarted bool
+	emailEmbeddingGeneration     int64
+	emailEmbeddingPendingOrder   []string
+	emailEmbeddingPendingJobs    map[string]emailEmbeddingJob
+	emailEmbeddingPendingLimit   int
+	emailEmbeddingQueuedCount    int
+	emailEmbeddingInFlightCount  int
+	emailEmbeddingLastEmbeddedAt string
 
 	memoryEmbeddingMu                sync.Mutex
 	memoryEmbeddingRunning           bool

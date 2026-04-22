@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	xhtml "golang.org/x/net/html"
@@ -23,15 +24,14 @@ import (
 )
 
 const (
-	emailEmbeddingDimensions   = 768
-	emailEmbeddingBatchSize    = 24
-	emailEmbeddingMaxTextChars = 6000
-	emailEmbeddingMaxBodyChars = 4500
+	emailEmbeddingDimensions         = 768
+	emailEmbeddingMaxTextChars       = 6000
+	emailEmbeddingMaxBodyChars       = 4500
+	defaultEmailEmbeddingWorkerCount = 4
+	defaultEmailEmbeddingQueueSize   = 128
 )
 
 var (
-	errEmailEmbeddingAlreadyRunning = errors.New("email embedding sync already running")
-
 	replyHeaderLinePattern = regexp.MustCompile(`(?i)^on .+wrote:$`)
 	headerBlockLinePattern = regexp.MustCompile(`(?i)^(from|sent|to|cc|bcc|subject):`)
 )
@@ -76,16 +76,26 @@ type emailEmbeddingStats struct {
 	Model    string
 }
 
-type emailEmbeddingRunRequest struct {
-	Reason            string
-	MessageIDs        []string
-	DeletedMessageIDs []string
-	Reset             bool
-	FullRescan        bool
+type emailEmbeddingJob struct {
+	MessageID  string
+	Operation  string
+	Reason     string
+	Generation int64
+	EnqueuedAt time.Time
 }
 
 type emailEmbeddingExistingState struct {
+	EmbeddingID       int64
+	ThreadID          string
+	EmbeddingText     string
 	SourceFingerprint string
+	VectorJSON        string
+	Subject           string
+	FromEmail         string
+	InternalDateUnix  int64
+	HasAttachments    bool
+	IsInTrash         bool
+	IsInSpam          bool
 	Provider          string
 	Model             string
 	Dimensions        int
@@ -144,16 +154,6 @@ func (a *App) resolveCurrentEmailEmbeddingConfig() (AgentDefinition, emailEmbedd
 	return agent, config, credential, true, nil
 }
 
-func (a *App) beginEmailEmbeddingRun() bool {
-	a.emailEmbeddingMu.Lock()
-	defer a.emailEmbeddingMu.Unlock()
-	if a.emailEmbeddingRunning {
-		return false
-	}
-	a.emailEmbeddingRunning = true
-	return true
-}
-
 func cloneStringSlice(values []string) []string {
 	if len(values) == 0 {
 		return nil
@@ -192,215 +192,307 @@ func sortedKeys(values map[string]struct{}) []string {
 	return keys
 }
 
-func (a *App) queuePendingEmailEmbeddingRun(request emailEmbeddingRunRequest) {
+func (a *App) startEmailEmbeddingWorkers() {
 	a.emailEmbeddingMu.Lock()
-	defer a.emailEmbeddingMu.Unlock()
-	a.emailEmbeddingPending = true
-	if strings.TrimSpace(request.Reason) != "" {
-		a.emailEmbeddingPendingReason = request.Reason
+	if a.emailEmbeddingCond == nil {
+		a.emailEmbeddingCond = sync.NewCond(&a.emailEmbeddingMu)
 	}
-	a.emailEmbeddingPendingReset = a.emailEmbeddingPendingReset || request.Reset
-	a.emailEmbeddingPendingFullRescan = a.emailEmbeddingPendingFullRescan || request.FullRescan
-	if !a.emailEmbeddingPendingFullRescan {
-		a.emailEmbeddingPendingMessageIDs = appendUniqueStringSet(a.emailEmbeddingPendingMessageIDs, request.MessageIDs)
+	if a.emailEmbeddingPendingJobs == nil {
+		a.emailEmbeddingPendingJobs = make(map[string]emailEmbeddingJob)
 	}
-	a.emailEmbeddingPendingDeletedMessageIDs = appendUniqueStringSet(a.emailEmbeddingPendingDeletedMessageIDs, request.DeletedMessageIDs)
+	if a.emailEmbeddingPendingLimit <= 0 {
+		a.emailEmbeddingPendingLimit = defaultEmailEmbeddingQueueSize
+	}
+	if a.emailEmbeddingWorkersStarted {
+		a.emailEmbeddingMu.Unlock()
+		return
+	}
+	a.emailEmbeddingWorkersStarted = true
+	a.emailEmbeddingMu.Unlock()
+
+	for workerIndex := 0; workerIndex < defaultEmailEmbeddingWorkerCount; workerIndex++ {
+		go a.runEmailEmbeddingWorker(workerIndex + 1)
+	}
 }
 
-func (a *App) finishEmailEmbeddingRun() (emailEmbeddingRunRequest, bool) {
+func (a *App) runEmailEmbeddingWorker(workerID int) {
+	for {
+		job := a.dequeueEmailEmbeddingJob()
+		err := a.processEmailEmbeddingJob(job)
+		a.finishEmailEmbeddingJob(err == nil)
+		if err != nil {
+			log.Printf("email embedding failure: worker=%d operation=%s message_id=%s generation=%d reason=%s err=%v", workerID, job.Operation, job.MessageID, job.Generation, job.Reason, err)
+		}
+	}
+}
+
+func (a *App) dequeueEmailEmbeddingJob() emailEmbeddingJob {
 	a.emailEmbeddingMu.Lock()
 	defer a.emailEmbeddingMu.Unlock()
-	a.emailEmbeddingRunning = false
-	if !a.emailEmbeddingPending {
-		return emailEmbeddingRunRequest{}, false
+
+	for {
+		for len(a.emailEmbeddingPendingOrder) > 0 {
+			messageID := strings.TrimSpace(a.emailEmbeddingPendingOrder[0])
+			a.emailEmbeddingPendingOrder = a.emailEmbeddingPendingOrder[1:]
+			job, ok := a.emailEmbeddingPendingJobs[messageID]
+			if !ok {
+				continue
+			}
+			delete(a.emailEmbeddingPendingJobs, messageID)
+			a.emailEmbeddingQueuedCount = len(a.emailEmbeddingPendingJobs)
+			a.emailEmbeddingInFlightCount++
+			a.emailEmbeddingCond.Broadcast()
+			return job
+		}
+		a.emailEmbeddingCond.Wait()
 	}
-	request := emailEmbeddingRunRequest{
-		Reason:            strings.TrimSpace(a.emailEmbeddingPendingReason),
-		DeletedMessageIDs: sortedKeys(a.emailEmbeddingPendingDeletedMessageIDs),
-		Reset:             a.emailEmbeddingPendingReset,
-		FullRescan:        a.emailEmbeddingPendingFullRescan,
+}
+
+func (a *App) finishEmailEmbeddingJob(success bool) {
+	a.emailEmbeddingMu.Lock()
+	defer a.emailEmbeddingMu.Unlock()
+
+	if a.emailEmbeddingInFlightCount > 0 {
+		a.emailEmbeddingInFlightCount--
 	}
-	if !request.FullRescan {
-		request.MessageIDs = sortedKeys(a.emailEmbeddingPendingMessageIDs)
+	if success {
+		a.emailEmbeddingLastEmbeddedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	a.emailEmbeddingPending = false
-	a.emailEmbeddingPendingReason = ""
-	a.emailEmbeddingPendingReset = false
-	a.emailEmbeddingPendingFullRescan = false
-	a.emailEmbeddingPendingMessageIDs = nil
-	a.emailEmbeddingPendingDeletedMessageIDs = nil
-	return request, true
+	a.emailEmbeddingCond.Broadcast()
+}
+
+func (a *App) currentEmailEmbeddingGeneration() int64 {
+	a.emailEmbeddingMu.Lock()
+	defer a.emailEmbeddingMu.Unlock()
+	return a.emailEmbeddingGeneration
+}
+
+func (a *App) resetEmailEmbeddingQueueState() int64 {
+	a.emailEmbeddingMu.Lock()
+	defer a.emailEmbeddingMu.Unlock()
+
+	if a.emailEmbeddingCond == nil {
+		a.emailEmbeddingCond = sync.NewCond(&a.emailEmbeddingMu)
+	}
+	if a.emailEmbeddingPendingJobs == nil {
+		a.emailEmbeddingPendingJobs = make(map[string]emailEmbeddingJob)
+	}
+	a.emailEmbeddingGeneration++
+	a.emailEmbeddingPendingOrder = nil
+	a.emailEmbeddingPendingJobs = make(map[string]emailEmbeddingJob)
+	a.emailEmbeddingQueuedCount = 0
+	a.emailEmbeddingCond.Broadcast()
+	return a.emailEmbeddingGeneration
+}
+
+func (a *App) enqueueEmailEmbeddingJob(job emailEmbeddingJob) error {
+	messageID := strings.TrimSpace(job.MessageID)
+	if messageID == "" {
+		return nil
+	}
+	a.startEmailEmbeddingWorkers()
+
+	a.emailEmbeddingMu.Lock()
+	defer a.emailEmbeddingMu.Unlock()
+
+	if job.Generation == 0 {
+		job.Generation = a.emailEmbeddingGeneration
+	}
+	job.MessageID = messageID
+	job.Operation = strings.TrimSpace(job.Operation)
+	if job.Operation == "" {
+		job.Operation = "upsert"
+	}
+	job.Reason = strings.TrimSpace(job.Reason)
+	if job.EnqueuedAt.IsZero() {
+		job.EnqueuedAt = time.Now().UTC()
+	}
+
+	for {
+		if _, exists := a.emailEmbeddingPendingJobs[messageID]; exists {
+			a.emailEmbeddingPendingJobs[messageID] = job
+			return nil
+		}
+		if len(a.emailEmbeddingPendingJobs) < a.emailEmbeddingPendingLimit {
+			a.emailEmbeddingPendingJobs[messageID] = job
+			a.emailEmbeddingPendingOrder = append(a.emailEmbeddingPendingOrder, messageID)
+			a.emailEmbeddingQueuedCount = len(a.emailEmbeddingPendingJobs)
+			a.emailEmbeddingCond.Broadcast()
+			return nil
+		}
+		a.emailEmbeddingCond.Wait()
+	}
+}
+
+func (a *App) enqueueEmailEmbeddingUpsert(messageID string, reason string) error {
+	return a.enqueueEmailEmbeddingJob(emailEmbeddingJob{
+		MessageID:  messageID,
+		Operation:  "upsert",
+		Reason:     reason,
+		Generation: a.currentEmailEmbeddingGeneration(),
+	})
+}
+
+func (a *App) waitForEmailEmbeddingDrain() {
+	a.startEmailEmbeddingWorkers()
+	a.emailEmbeddingMu.Lock()
+	defer a.emailEmbeddingMu.Unlock()
+	for len(a.emailEmbeddingPendingJobs) > 0 || a.emailEmbeddingInFlightCount > 0 {
+		a.emailEmbeddingCond.Wait()
+	}
+}
+
+func (a *App) getEmailEmbeddingQueueStatus() (int, int, string) {
+	a.emailEmbeddingMu.Lock()
+	defer a.emailEmbeddingMu.Unlock()
+	return a.emailEmbeddingQueuedCount, a.emailEmbeddingInFlightCount, strings.TrimSpace(a.emailEmbeddingLastEmbeddedAt)
 }
 
 func (a *App) refreshEmailEmbeddingsInBackground(reason string, reset bool) {
-	a.refreshEmailEmbeddingRequestInBackground(emailEmbeddingRunRequest{
-		Reason:     reason,
-		Reset:      reset,
-		FullRescan: true,
-	})
+	go func() {
+		generation := a.currentEmailEmbeddingGeneration()
+		if reset {
+			generation = a.resetEmailEmbeddingQueueState()
+			if err := a.clearEmailEmbeddings(); err != nil {
+				log.Printf("email embedding failure: reason=%s step=clear err=%v", reason, err)
+				return
+			}
+		}
+		messageIDs, err := a.listActiveSyncedEmailMessageIDs()
+		if err != nil {
+			log.Printf("email embedding failure: reason=%s step=list_all_message_ids err=%v", reason, err)
+			return
+		}
+		for _, messageID := range messageIDs {
+			if err := a.enqueueEmailEmbeddingJob(emailEmbeddingJob{
+				MessageID:  messageID,
+				Operation:  "upsert",
+				Reason:     reason,
+				Generation: generation,
+			}); err != nil {
+				log.Printf("email embedding failure: reason=%s step=enqueue_full_rescan message_id=%s err=%v", reason, messageID, err)
+				return
+			}
+		}
+	}()
 }
 
 func (a *App) refreshEmailEmbeddingsForMessageIDsInBackground(reason string, messageIDs []string, deletedMessageIDs []string) {
-	a.refreshEmailEmbeddingRequestInBackground(emailEmbeddingRunRequest{
-		Reason:            reason,
-		MessageIDs:        cloneStringSlice(messageIDs),
-		DeletedMessageIDs: cloneStringSlice(deletedMessageIDs),
-	})
-}
-
-func (a *App) refreshEmailEmbeddingRequestInBackground(request emailEmbeddingRunRequest) {
 	go func() {
-		if err := a.syncEmailEmbeddings(request); err != nil && !errors.Is(err, errEmailEmbeddingAlreadyRunning) {
-			log.Printf("email embedding error: async refresh failed: reason=%s reset=%t full_rescan=%t message_ids=%d deleted_message_ids=%d err=%v", request.Reason, request.Reset, request.FullRescan, len(request.MessageIDs), len(request.DeletedMessageIDs), err)
+		for _, messageID := range deletedMessageIDs {
+			if err := a.deleteEmailEmbeddingByMessageID(messageID); err != nil {
+				log.Printf("email embedding failure: reason=%s step=delete_message message_id=%s err=%v", reason, strings.TrimSpace(messageID), err)
+				return
+			}
+		}
+		for _, messageID := range messageIDs {
+			if err := a.enqueueEmailEmbeddingUpsert(messageID, reason); err != nil {
+				log.Printf("email embedding failure: reason=%s step=enqueue_message message_id=%s err=%v", reason, strings.TrimSpace(messageID), err)
+				return
+			}
 		}
 	}()
 }
 
-func (a *App) syncEmailEmbeddingsForSyncResult(reason string, result emailSyncResult) error {
-	return a.syncEmailEmbeddings(emailEmbeddingRunRequest{
-		Reason:            reason,
-		MessageIDs:        cloneStringSlice(result.UpsertedMessageIDs),
-		DeletedMessageIDs: cloneStringSlice(result.DeletedMessageIDs),
-	})
-}
-
-func (a *App) syncEmailEmbeddings(request emailEmbeddingRunRequest) error {
-	request.Reason = strings.TrimSpace(request.Reason)
-	request.MessageIDs = cloneStringSlice(request.MessageIDs)
-	request.DeletedMessageIDs = cloneStringSlice(request.DeletedMessageIDs)
-	if !request.FullRescan && !request.Reset && len(request.MessageIDs) == 0 && len(request.DeletedMessageIDs) == 0 {
+func (a *App) processEmailEmbeddingJob(job emailEmbeddingJob) error {
+	if !a.isCurrentEmailEmbeddingGeneration(job.Generation) {
 		return nil
 	}
-	if !a.beginEmailEmbeddingRun() {
-		a.queuePendingEmailEmbeddingRun(request)
-		log.Printf("email embedding warning: run already active; queued follow-up refresh: reason=%s reset=%t full_rescan=%t message_ids=%d deleted_message_ids=%d", request.Reason, request.Reset, request.FullRescan, len(request.MessageIDs), len(request.DeletedMessageIDs))
-		return errEmailEmbeddingAlreadyRunning
+	switch job.Operation {
+	case "delete":
+		return a.deleteEmailEmbeddingByMessageID(job.MessageID)
+	case "upsert":
+		return a.processEmailEmbeddingUpsertJob(job)
+	default:
+		return fmt.Errorf("unsupported email embedding job operation: %s", job.Operation)
 	}
-	startedAt := time.Now()
-	outcome := "success"
-	defer func() {
-		nextRequest, hasPending := a.finishEmailEmbeddingRun()
-		log.Printf("email embedding stop: reason=%s outcome=%s duration=%s reset=%t full_rescan=%t message_ids=%d deleted_message_ids=%d", request.Reason, outcome, time.Since(startedAt).Round(time.Millisecond), request.Reset, request.FullRescan, len(request.MessageIDs), len(request.DeletedMessageIDs))
-		if hasPending {
-			log.Printf("email embedding warning: dispatching queued follow-up refresh: reason=%s reset=%t full_rescan=%t message_ids=%d deleted_message_ids=%d", nextRequest.Reason, nextRequest.Reset, nextRequest.FullRescan, len(nextRequest.MessageIDs), len(nextRequest.DeletedMessageIDs))
-			a.refreshEmailEmbeddingRequestInBackground(nextRequest)
-		}
-	}()
-	log.Printf("email embedding start: reason=%s reset=%t full_rescan=%t message_ids=%d deleted_message_ids=%d", request.Reason, request.Reset, request.FullRescan, len(request.MessageIDs), len(request.DeletedMessageIDs))
+}
 
-	if request.Reset {
-		if err := a.clearEmailEmbeddings(); err != nil {
-			outcome = "failure"
-			log.Printf("email embedding failure: reason=%s step=clear reset=%t full_rescan=%t err=%v", request.Reason, request.Reset, request.FullRescan, err)
-			return err
-		}
-	}
-	if len(request.DeletedMessageIDs) > 0 {
-		if err := a.deleteEmailEmbeddingsByMessageIDs(request.DeletedMessageIDs); err != nil {
-			outcome = "failure"
-			log.Printf("email embedding failure: reason=%s step=delete deleted_message_ids=%d err=%v", request.Reason, len(request.DeletedMessageIDs), err)
-			return err
-		}
-	}
-
+func (a *App) processEmailEmbeddingUpsertJob(job emailEmbeddingJob) error {
 	agent, config, credential, supported, err := a.resolveCurrentEmailEmbeddingConfig()
 	if err != nil {
-		outcome = "failure"
-		log.Printf("email embedding failure: reason=%s step=resolve_config err=%v", request.Reason, err)
 		return err
 	}
 	if !supported {
-		log.Printf("email embedding warning: unsupported provider for selected agent; cleaning orphaned index: reason=%s provider=%s", request.Reason, agent.Provider)
-		return a.cleanupOrphanedEmailEmbeddingIndex()
-	}
-
-	messageIDs := request.MessageIDs
-	if request.FullRescan {
-		messageIDs = nil
-	}
-	sources, err := a.listEmailEmbeddingSources(messageIDs)
-	if err != nil {
-		outcome = "failure"
-		log.Printf("email embedding failure: reason=%s step=list_sources message_ids=%d full_rescan=%t err=%v", request.Reason, len(messageIDs), request.FullRescan, err)
-		return err
-	}
-	existingStates, err := a.listExistingEmailEmbeddingStates(extractEmailEmbeddingSourceIDs(sources))
-	if err != nil {
-		outcome = "failure"
-		log.Printf("email embedding failure: reason=%s step=list_existing_states source_count=%d err=%v", request.Reason, len(sources), err)
-		return err
-	}
-	documents := make([]emailEmbeddingDocument, 0, len(sources))
-	for _, source := range sources {
-		document := buildEmailEmbeddingDocument(source)
-		if strings.TrimSpace(document.Text) == "" {
-			if err := a.deleteEmailEmbeddingsByMessageIDs([]string{source.MessageID}); err != nil {
-				outcome = "failure"
-				log.Printf("email embedding failure: reason=%s step=delete_empty_document_embeddings message_id=%s err=%v", request.Reason, source.MessageID, err)
-				return err
-			}
-			continue
-		}
-		if existingState, ok := existingStates[source.MessageID]; ok &&
-			existingState.SourceFingerprint == document.SourceFingerprint &&
-			existingState.Provider == config.Provider &&
-			existingState.Model == config.Model &&
-			existingState.Dimensions == config.Dimensions {
-			continue
-		}
-		documents = append(documents, document)
-	}
-	if len(documents) == 0 {
-		if err := a.cleanupOrphanedEmailEmbeddingIndex(); err != nil {
-			outcome = "failure"
-			log.Printf("email embedding failure: reason=%s step=cleanup_orphans_noop err=%v", request.Reason, err)
-			return err
-		}
-		log.Printf("email embedding success: reason=%s provider=%s model=%s source_count=%d indexed=0 deleted_message_ids=%d reset=%t full_rescan=%t", request.Reason, config.Provider, config.Model, len(sources), len(request.DeletedMessageIDs), request.Reset, request.FullRescan)
 		return nil
 	}
 
-	ctx := context.Background()
-	indexedCount := 0
-	for start := 0; start < len(documents); start += emailEmbeddingBatchSize {
-		end := start + emailEmbeddingBatchSize
-		if end > len(documents) {
-			end = len(documents)
-		}
-		batch := documents[start:end]
-		texts := make([]string, 0, len(batch))
-		titles := make([]string, 0, len(batch))
-		for _, document := range batch {
-			texts = append(texts, document.Text)
-			titles = append(titles, document.Title)
-		}
-		vectors, err := a.embedTexts(ctx, agent, config, credential, texts, titles, "RETRIEVAL_DOCUMENT")
-		if err != nil {
-			outcome = "failure"
-			log.Printf("email embedding failure: reason=%s step=embed_texts provider=%s model=%s batch_start=%d batch_size=%d err=%v", request.Reason, config.Provider, config.Model, start, len(batch), err)
-			return err
-		}
-		if len(vectors) != len(batch) {
-			err := fmt.Errorf("embedding provider returned %d vectors for %d inputs", len(vectors), len(batch))
-			outcome = "failure"
-			log.Printf("email embedding failure: reason=%s step=vector_count_mismatch provider=%s model=%s batch_start=%d batch_size=%d err=%v", request.Reason, config.Provider, config.Model, start, len(batch), err)
-			return err
-		}
-		if err := a.upsertEmailEmbeddingBatch(batch, vectors, config); err != nil {
-			outcome = "failure"
-			log.Printf("email embedding failure: reason=%s step=upsert_batch provider=%s model=%s batch_start=%d batch_size=%d err=%v", request.Reason, config.Provider, config.Model, start, len(batch), err)
-			return err
-		}
-		indexedCount += len(batch)
-	}
-
-	if err := a.cleanupOrphanedEmailEmbeddingIndex(); err != nil {
-		outcome = "failure"
-		log.Printf("email embedding failure: reason=%s step=cleanup_orphans provider=%s model=%s err=%v", request.Reason, config.Provider, config.Model, err)
+	source, ok, err := a.getEmailEmbeddingSourceByMessageID(job.MessageID)
+	if err != nil {
 		return err
 	}
-	log.Printf("email embedding success: reason=%s provider=%s model=%s source_count=%d indexed=%d deleted_message_ids=%d reset=%t full_rescan=%t", request.Reason, config.Provider, config.Model, len(sources), indexedCount, len(request.DeletedMessageIDs), request.Reset, request.FullRescan)
-	return nil
+	if !ok {
+		return a.deleteEmailEmbeddingByMessageID(job.MessageID)
+	}
+
+	document := buildEmailEmbeddingDocument(source)
+	if strings.TrimSpace(document.Text) == "" {
+		return a.deleteEmailEmbeddingByMessageID(job.MessageID)
+	}
+
+	existingState, hasExisting, err := a.getEmailEmbeddingExistingState(job.MessageID)
+	if err != nil {
+		return err
+	}
+	if hasExisting &&
+		existingState.SourceFingerprint == document.SourceFingerprint &&
+		existingState.Provider == config.Provider &&
+		existingState.Model == config.Model &&
+		existingState.Dimensions == config.Dimensions {
+		if !emailEmbeddingMetadataChanged(existingState, document) {
+			return nil
+		}
+		if !a.isCurrentEmailEmbeddingGeneration(job.Generation) {
+			return nil
+		}
+		return a.applyEmailEmbeddingMetadataRefresh(document, existingState)
+	}
+
+	vectors, err := a.embedTexts(context.Background(), agent, config, credential, []string{document.Text}, []string{document.Title}, "RETRIEVAL_DOCUMENT")
+	if err != nil {
+		return err
+	}
+	if len(vectors) != 1 {
+		return fmt.Errorf("embedding provider returned %d vectors for 1 input", len(vectors))
+	}
+	if !a.isCurrentEmailEmbeddingGeneration(job.Generation) {
+		return nil
+	}
+	return a.applyEmailEmbeddingUpsert(document, vectors[0], config)
+}
+
+func (a *App) isCurrentEmailEmbeddingGeneration(generation int64) bool {
+	a.emailEmbeddingMu.Lock()
+	defer a.emailEmbeddingMu.Unlock()
+	return generation == a.emailEmbeddingGeneration
+}
+
+func emailEmbeddingMetadataChanged(existing emailEmbeddingExistingState, document emailEmbeddingDocument) bool {
+	if existing.ThreadID != strings.TrimSpace(document.Source.ThreadID) {
+		return true
+	}
+	if existing.EmbeddingText != strings.TrimSpace(document.Text) {
+		return true
+	}
+	if cleanWhitespace(existing.Subject) != cleanWhitespace(document.Source.Subject) {
+		return true
+	}
+	if strings.ToLower(cleanWhitespace(existing.FromEmail)) != strings.ToLower(cleanWhitespace(document.Source.FromEmail)) {
+		return true
+	}
+	if existing.InternalDateUnix != document.Source.InternalDateUnix {
+		return true
+	}
+	if existing.HasAttachments != document.Source.HasAttachments {
+		return true
+	}
+	if existing.IsInTrash != document.Source.IsInTrash {
+		return true
+	}
+	if existing.IsInSpam != document.Source.IsInSpam {
+		return true
+	}
+	return false
 }
 
 func (a *App) listEmailEmbeddingSources(messageIDs []string) ([]emailEmbeddingSource, error) {
@@ -479,6 +571,44 @@ func (a *App) listEmailEmbeddingSources(messageIDs []string) ([]emailEmbeddingSo
 	return sources, rows.Err()
 }
 
+func (a *App) getEmailEmbeddingSourceByMessageID(messageID string) (emailEmbeddingSource, bool, error) {
+	sources, err := a.listEmailEmbeddingSources([]string{strings.TrimSpace(messageID)})
+	if err != nil {
+		return emailEmbeddingSource{}, false, err
+	}
+	if len(sources) == 0 {
+		return emailEmbeddingSource{}, false, nil
+	}
+	return sources[0], true, nil
+}
+
+func (a *App) listActiveSyncedEmailMessageIDs() ([]string, error) {
+	rows, err := a.db.Query(`
+		SELECT message_id
+		FROM synced_emails
+		WHERE is_deleted = 0
+		ORDER BY internal_date_unix DESC, message_id DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	messageIDs := make([]string, 0)
+	for rows.Next() {
+		var messageID string
+		if err := rows.Scan(&messageID); err != nil {
+			return nil, err
+		}
+		messageID = strings.TrimSpace(messageID)
+		if messageID == "" {
+			continue
+		}
+		messageIDs = append(messageIDs, messageID)
+	}
+	return messageIDs, rows.Err()
+}
+
 func extractEmailEmbeddingSourceIDs(sources []emailEmbeddingSource) []string {
 	ids := make([]string, 0, len(sources))
 	for _, source := range sources {
@@ -503,7 +633,17 @@ func (a *App) listExistingEmailEmbeddingStates(messageIDs []string) (map[string]
 	rows, err := a.db.Query(`
 		SELECT
 			message_id,
+			id,
+			thread_id,
+			embedding_text,
 			COALESCE(source_fingerprint, ''),
+			embedding_vector,
+			COALESCE(subject, ''),
+			COALESCE(from_email, ''),
+			internal_date_unix,
+			has_attachments,
+			is_in_trash,
+			is_in_spam,
 			embedding_provider,
 			embedding_model,
 			embedding_dimensions
@@ -518,18 +658,43 @@ func (a *App) listExistingEmailEmbeddingStates(messageIDs []string) (map[string]
 	for rows.Next() {
 		var messageID string
 		var state emailEmbeddingExistingState
+		var hasAttachments int
+		var isInTrash int
+		var isInSpam int
 		if err := rows.Scan(
 			&messageID,
+			&state.EmbeddingID,
+			&state.ThreadID,
+			&state.EmbeddingText,
 			&state.SourceFingerprint,
+			&state.VectorJSON,
+			&state.Subject,
+			&state.FromEmail,
+			&state.InternalDateUnix,
+			&hasAttachments,
+			&isInTrash,
+			&isInSpam,
 			&state.Provider,
 			&state.Model,
 			&state.Dimensions,
 		); err != nil {
 			return nil, err
 		}
+		state.HasAttachments = hasAttachments != 0
+		state.IsInTrash = isInTrash != 0
+		state.IsInSpam = isInSpam != 0
 		states[messageID] = state
 	}
 	return states, rows.Err()
+}
+
+func (a *App) getEmailEmbeddingExistingState(messageID string) (emailEmbeddingExistingState, bool, error) {
+	states, err := a.listExistingEmailEmbeddingStates([]string{strings.TrimSpace(messageID)})
+	if err != nil {
+		return emailEmbeddingExistingState{}, false, err
+	}
+	state, ok := states[strings.TrimSpace(messageID)]
+	return state, ok, nil
 }
 
 func buildEmailEmbeddingDocument(source emailEmbeddingSource) emailEmbeddingDocument {
@@ -585,23 +750,13 @@ func buildEmailEmbeddingDocument(source emailEmbeddingSource) emailEmbeddingDocu
 
 func computeEmailEmbeddingFingerprint(source emailEmbeddingSource, text string) string {
 	payload, _ := json.Marshal(struct {
-		ThreadID         string `json:"thread_id"`
-		Text             string `json:"text"`
-		Subject          string `json:"subject"`
-		FromEmail        string `json:"from_email"`
-		InternalDateUnix int64  `json:"internal_date_unix"`
-		HasAttachments   bool   `json:"has_attachments"`
-		IsInTrash        bool   `json:"is_in_trash"`
-		IsInSpam         bool   `json:"is_in_spam"`
+		ThreadID string `json:"thread_id"`
+		Title    string `json:"title"`
+		Text     string `json:"text"`
 	}{
-		ThreadID:         strings.TrimSpace(source.ThreadID),
-		Text:             strings.TrimSpace(text),
-		Subject:          cleanWhitespace(source.Subject),
-		FromEmail:        strings.ToLower(cleanWhitespace(source.FromEmail)),
-		InternalDateUnix: source.InternalDateUnix,
-		HasAttachments:   source.HasAttachments,
-		IsInTrash:        source.IsInTrash,
-		IsInSpam:         source.IsInSpam,
+		ThreadID: strings.TrimSpace(source.ThreadID),
+		Title:    cleanWhitespace(source.Subject),
+		Text:     strings.TrimSpace(text),
 	})
 	sum := sha256.Sum256(payload)
 	return fmt.Sprintf("%x", sum[:])
@@ -1124,6 +1279,21 @@ func recreateEmailEmbeddingIndex(tx *sql.Tx) error {
 }
 
 func (a *App) upsertEmailEmbeddingBatch(documents []emailEmbeddingDocument, vectors [][]float32, config emailEmbeddingConfig) error {
+	for index, document := range documents {
+		if index >= len(vectors) {
+			return fmt.Errorf("missing vector for email embedding document at index %d", index)
+		}
+		if err := a.applyEmailEmbeddingUpsert(document, vectors[index], config); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) applyEmailEmbeddingUpsert(document emailEmbeddingDocument, vector []float32, config emailEmbeddingConfig) error {
+	a.emailEmbeddingDBWriteMu.Lock()
+	defer a.emailEmbeddingDBWriteMu.Unlock()
+
 	tx, err := a.db.Begin()
 	if err != nil {
 		return err
@@ -1132,72 +1302,212 @@ func (a *App) upsertEmailEmbeddingBatch(documents []emailEmbeddingDocument, vect
 		_ = tx.Rollback()
 	}()
 
-	for index, document := range documents {
-		vectorJSONBytes, err := json.Marshal(vectors[index])
-		if err != nil {
-			return err
-		}
-		vectorJSON := string(vectorJSONBytes)
+	if err := upsertEmailEmbeddingRowTx(tx, document, vector, config, true); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 
-		if _, err := tx.Exec(`
-			INSERT INTO email_embeddings (
-				message_id,
-				thread_id,
-				chunk_index,
-				embedding_text,
-				source_fingerprint,
-				embedding_vector,
-				subject,
-				from_email,
-				internal_date_unix,
-				has_attachments,
-				is_in_trash,
-				is_in_spam,
-				embedding_provider,
-				embedding_model,
-				embedding_dimensions,
-				source_sync_updated_at,
-				indexed_at,
-				updated_at
-			) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-			ON CONFLICT(message_id, chunk_index) DO UPDATE SET
-				thread_id = excluded.thread_id,
-				embedding_text = excluded.embedding_text,
-				source_fingerprint = excluded.source_fingerprint,
-				embedding_vector = excluded.embedding_vector,
-				subject = excluded.subject,
-				from_email = excluded.from_email,
-				internal_date_unix = excluded.internal_date_unix,
-				has_attachments = excluded.has_attachments,
-				is_in_trash = excluded.is_in_trash,
-				is_in_spam = excluded.is_in_spam,
-				embedding_provider = excluded.embedding_provider,
-				embedding_model = excluded.embedding_model,
-				embedding_dimensions = excluded.embedding_dimensions,
-				source_sync_updated_at = excluded.source_sync_updated_at,
-				indexed_at = CURRENT_TIMESTAMP,
-				updated_at = CURRENT_TIMESTAMP
-		`,
-			document.Source.MessageID,
-			document.Source.ThreadID,
-			document.Text,
-			document.SourceFingerprint,
-			vectorJSON,
-			nullIfEmpty(document.Source.Subject),
-			nullIfEmpty(strings.ToLower(document.Source.FromEmail)),
-			document.Source.InternalDateUnix,
-			boolToInt(document.Source.HasAttachments),
-			boolToInt(document.Source.IsInTrash),
-			boolToInt(document.Source.IsInSpam),
-			config.Provider,
-			config.Model,
-			config.Dimensions,
-			nullIfEmpty(document.Source.SyncUpdatedAt),
-		); err != nil {
-			return err
-		}
+func (a *App) applyEmailEmbeddingMetadataRefresh(document emailEmbeddingDocument, existingState emailEmbeddingExistingState) error {
+	a.emailEmbeddingDBWriteMu.Lock()
+	defer a.emailEmbeddingDBWriteMu.Unlock()
+
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	if _, err := tx.Exec(`
+		UPDATE email_embeddings
+		SET
+			thread_id = ?,
+			embedding_text = ?,
+			subject = ?,
+			from_email = ?,
+			internal_date_unix = ?,
+			has_attachments = ?,
+			is_in_trash = ?,
+			is_in_spam = ?,
+			source_sync_updated_at = ?,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`,
+		document.Source.ThreadID,
+		document.Text,
+		nullIfEmpty(document.Source.Subject),
+		nullIfEmpty(strings.ToLower(document.Source.FromEmail)),
+		document.Source.InternalDateUnix,
+		boolToInt(document.Source.HasAttachments),
+		boolToInt(document.Source.IsInTrash),
+		boolToInt(document.Source.IsInSpam),
+		nullIfEmpty(document.Source.SyncUpdatedAt),
+		existingState.EmbeddingID,
+	); err != nil {
+		return err
+	}
+	if err := replaceEmailEmbeddingIndexRowTx(tx, existingState.EmbeddingID, existingState.VectorJSON, document); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func upsertEmailEmbeddingRowTx(tx *sql.Tx, document emailEmbeddingDocument, vector []float32, config emailEmbeddingConfig, refreshIndexedAt bool) error {
+	vectorJSONBytes, err := json.Marshal(vector)
+	if err != nil {
+		return err
+	}
+	vectorJSON := string(vectorJSONBytes)
+	if _, err := tx.Exec(`
+		INSERT INTO email_embeddings (
+			message_id,
+			thread_id,
+			chunk_index,
+			embedding_text,
+			source_fingerprint,
+			embedding_vector,
+			subject,
+			from_email,
+			internal_date_unix,
+			has_attachments,
+			is_in_trash,
+			is_in_spam,
+			embedding_provider,
+			embedding_model,
+			embedding_dimensions,
+			source_sync_updated_at,
+			indexed_at,
+			updated_at
+		) VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+		ON CONFLICT(message_id, chunk_index) DO UPDATE SET
+			thread_id = excluded.thread_id,
+			embedding_text = excluded.embedding_text,
+			source_fingerprint = excluded.source_fingerprint,
+			embedding_vector = excluded.embedding_vector,
+			subject = excluded.subject,
+			from_email = excluded.from_email,
+			internal_date_unix = excluded.internal_date_unix,
+			has_attachments = excluded.has_attachments,
+			is_in_trash = excluded.is_in_trash,
+			is_in_spam = excluded.is_in_spam,
+			embedding_provider = excluded.embedding_provider,
+			embedding_model = excluded.embedding_model,
+			embedding_dimensions = excluded.embedding_dimensions,
+			source_sync_updated_at = excluded.source_sync_updated_at,
+			indexed_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE indexed_at END,
+			updated_at = CURRENT_TIMESTAMP
+	`,
+		document.Source.MessageID,
+		document.Source.ThreadID,
+		document.Text,
+		document.SourceFingerprint,
+		vectorJSON,
+		nullIfEmpty(document.Source.Subject),
+		nullIfEmpty(strings.ToLower(document.Source.FromEmail)),
+		document.Source.InternalDateUnix,
+		boolToInt(document.Source.HasAttachments),
+		boolToInt(document.Source.IsInTrash),
+		boolToInt(document.Source.IsInSpam),
+		config.Provider,
+		config.Model,
+		config.Dimensions,
+		nullIfEmpty(document.Source.SyncUpdatedAt),
+		refreshIndexedAt,
+	); err != nil {
+		return err
 	}
 
+	var embeddingID int64
+	var storedVectorJSON string
+	if err := tx.QueryRow(`
+		SELECT id, embedding_vector
+		FROM email_embeddings
+		WHERE message_id = ? AND chunk_index = 0
+	`,
+		document.Source.MessageID,
+	).Scan(&embeddingID, &storedVectorJSON); err != nil {
+		return err
+	}
+	return replaceEmailEmbeddingIndexRowTx(tx, embeddingID, storedVectorJSON, document)
+}
+
+func replaceEmailEmbeddingIndexRowTx(tx *sql.Tx, embeddingID int64, vectorJSON string, document emailEmbeddingDocument) error {
+	if _, err := tx.Exec(`
+		DELETE FROM email_embedding_index
+		WHERE embedding_id = ?
+	`, embeddingID); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO email_embedding_index (
+			embedding_id,
+			embedding_vector,
+			internal_date_unix,
+			has_attachments,
+			is_in_trash,
+			is_in_spam,
+			from_email,
+			message_id,
+			thread_id,
+			subject,
+			embedding_text
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		embeddingID,
+		vectorJSON,
+		document.Source.InternalDateUnix,
+		boolToInt(document.Source.HasAttachments),
+		boolToInt(document.Source.IsInTrash),
+		boolToInt(document.Source.IsInSpam),
+		strings.ToLower(strings.TrimSpace(document.Source.FromEmail)),
+		document.Source.MessageID,
+		document.Source.ThreadID,
+		strings.TrimSpace(document.Source.Subject),
+		document.Text,
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func deleteEmailEmbeddingByMessageTx(tx *sql.Tx, messageID string) error {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return nil
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM email_embedding_index
+		WHERE embedding_id IN (
+			SELECT id
+			FROM email_embeddings
+			WHERE message_id = ?
+		)
+	`, messageID); err != nil && !isIgnorableSQLiteVecDeleteError(err) {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM email_embeddings WHERE message_id = ?`, messageID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *App) deleteEmailEmbeddingByMessageID(messageID string) error {
+	a.emailEmbeddingDBWriteMu.Lock()
+	defer a.emailEmbeddingDBWriteMu.Unlock()
+
+	tx, err := a.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+	if err := deleteEmailEmbeddingByMessageTx(tx, messageID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -1218,8 +1528,27 @@ func (a *App) deleteEmailEmbeddingsByMessageIDs(messageIDs []string) error {
 	defer func() {
 		_ = tx.Rollback()
 	}()
-	if _, err := tx.Exec(`DELETE FROM email_embeddings WHERE message_id IN (`+placeholders+`)`, args...); err != nil {
+
+	rows, err := tx.Query(`SELECT message_id FROM email_embeddings WHERE message_id IN (`+placeholders+`)`, args...)
+	if err != nil {
 		return err
+	}
+	defer rows.Close()
+	idsToDelete := make([]string, 0, len(messageIDs))
+	for rows.Next() {
+		var messageID string
+		if err := rows.Scan(&messageID); err != nil {
+			return err
+		}
+		idsToDelete = append(idsToDelete, messageID)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, messageID := range idsToDelete {
+		if err := deleteEmailEmbeddingByMessageTx(tx, messageID); err != nil {
+			return err
+		}
 	}
 
 	return tx.Commit()
