@@ -19,7 +19,8 @@ import (
 const (
 	sqliteDriverName        = "sqlite3_vec"
 	sqliteBusyTimeoutMillis = 10000
-	sqliteMaxOpenConns      = 8
+	sqliteMaxOpenConns      = 4
+	sqliteMaxIdleConns      = 2
 )
 
 var sqliteConnectionHookOnce sync.Once
@@ -88,7 +89,7 @@ func newApp(config Config) (*App, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(sqliteMaxOpenConns)
-	db.SetMaxIdleConns(sqliteMaxOpenConns)
+	db.SetMaxIdleConns(sqliteMaxIdleConns)
 	app := &App{
 		config: config,
 		db:     db,
