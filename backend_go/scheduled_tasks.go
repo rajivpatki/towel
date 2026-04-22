@@ -20,6 +20,8 @@ const (
 	scheduledTaskListPageSizeMax     = 50
 	scheduledTaskRunTimeout          = 2 * time.Minute
 	scheduledTaskToolPageSize        = 10
+	scheduledTaskOpenAIAgentID       = "openai:gpt-5.4-mini"
+	scheduledTaskGeminiModel         = "gemini-2.5-flash-lite"
 )
 
 type ScheduledTaskItem struct {
@@ -117,6 +119,21 @@ func normalizeScheduledTaskTitle(value string) string {
 
 func normalizeScheduledTaskInstruction(value string) string {
 	return truncateString(strings.TrimSpace(value), scheduledTaskInstructionMaxChars)
+}
+
+func scheduledTaskAgentDefinition(agent AgentDefinition) AgentDefinition {
+	switch strings.ToLower(strings.TrimSpace(agent.Provider)) {
+	case "openai":
+		if lightweight, ok := getAgentDefinition(scheduledTaskOpenAIAgentID); ok {
+			return lightweight
+		}
+		agent.Model = "gpt-5.4-mini"
+		agent.Label = "OpenAI GPT 5.4 Mini"
+	case "gemini":
+		agent.Model = scheduledTaskGeminiModel
+		agent.Label = "Google Gemini 2.5 Flash-Lite"
+	}
+	return agent
 }
 
 func normalizeScheduledTaskLabelNames(values []string) []string {
@@ -1264,7 +1281,12 @@ func (a *App) runScheduledTask(request scheduledTaskRunRequest) error {
 		Role:    "user",
 		Content: buildScheduledTaskUserPrompt(task, request, matched),
 	}}
-	response, actions, err := a.runAgentTurn(ctx, buildScheduledTaskSystemPrompt(), history, nil)
+	agent, credential, err := a.resolveSelectedAgentAndCredential()
+	if err != nil {
+		_ = a.markScheduledTaskRunFailed(task.ID, request, len(matched), err)
+		return err
+	}
+	response, actions, err := a.runAgentTurnWithAgent(ctx, scheduledTaskAgentDefinition(agent), credential, buildScheduledTaskSystemPrompt(), history, nil)
 	if err != nil {
 		_ = a.markScheduledTaskRunFailed(task.ID, request, len(matched), err)
 		return err

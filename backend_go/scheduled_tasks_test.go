@@ -212,3 +212,51 @@ func TestBuildSearchScheduledTasksToolDefinitionIncludesListPagination(t *testin
 		t.Fatalf("required should be omitted for optional list-mode query")
 	}
 }
+
+func TestScheduledTaskAgentDefinitionUsesMiniForOpenAI(t *testing.T) {
+	agent, ok := getAgentDefinition("openai:gpt-5.4")
+	if !ok {
+		t.Fatal("openai agent definition not found")
+	}
+
+	scheduled := scheduledTaskAgentDefinition(agent)
+	if scheduled.AgentID != scheduledTaskOpenAIAgentID {
+		t.Fatalf("scheduled agent id = %q, want %q", scheduled.AgentID, scheduledTaskOpenAIAgentID)
+	}
+	if scheduled.Model != "gpt-5.4-mini" {
+		t.Fatalf("scheduled model = %q, want gpt-5.4-mini", scheduled.Model)
+	}
+}
+
+func TestScheduledTaskAgentDefinitionUsesFlashLiteForGemini(t *testing.T) {
+	agent, ok := getAgentDefinition("gemini:gemini-3-flash-preview")
+	if !ok {
+		t.Fatal("gemini agent definition not found")
+	}
+
+	scheduled := scheduledTaskAgentDefinition(agent)
+	if scheduled.Provider != "gemini" {
+		t.Fatalf("scheduled provider = %q, want gemini", scheduled.Provider)
+	}
+	if scheduled.Model != scheduledTaskGeminiModel {
+		t.Fatalf("scheduled model = %q, want %q", scheduled.Model, scheduledTaskGeminiModel)
+	}
+	if scheduled.AuthMode != "google_oauth" {
+		t.Fatalf("scheduled auth mode = %q, want google_oauth", scheduled.AuthMode)
+	}
+}
+
+func TestScheduledTaskAgentDefinitionLeavesOtherProvidersUnchanged(t *testing.T) {
+	agent, ok := getAgentDefinition("deepseek:deepseek-thinking")
+	if !ok {
+		t.Fatal("deepseek agent definition not found")
+	}
+
+	scheduled := scheduledTaskAgentDefinition(agent)
+	if scheduled.AgentID != agent.AgentID {
+		t.Fatalf("scheduled agent id = %q, want %q", scheduled.AgentID, agent.AgentID)
+	}
+	if scheduled.Model != agent.Model {
+		t.Fatalf("scheduled model = %q, want %q", scheduled.Model, agent.Model)
+	}
+}
