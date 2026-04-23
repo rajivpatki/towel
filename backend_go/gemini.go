@@ -172,7 +172,7 @@ func interpretGeminiSetupFailure(statusCode int, body []byte) GeminiSetupOut {
 	}
 }
 
-func (a *App) callGeminiLLM(ctx context.Context, agent AgentDefinition, accessToken string, systemPrompt string, history []ConversationMessage, emitProgress func(string, []string)) (string, []string, error) {
+func (a *App) callGeminiLLM(ctx context.Context, agent AgentDefinition, accessToken string, systemPrompt string, history []ConversationMessage, emitProgress func(string, []string), subagentDepth int) (string, []string, error) {
 	contents := buildGeminiConversation(history)
 	actions := make([]string, 0)
 	latestContent := ""
@@ -196,7 +196,7 @@ func (a *App) callGeminiLLM(ctx context.Context, agent AgentDefinition, accessTo
 			return content, actions, nil
 		}
 		contents = append(contents, candidate.Content)
-		toolResults := a.executeToolCallsParallel(message.ToolCalls)
+		toolResults := a.executeToolCallsParallel(ctx, agent, accessToken, message.ToolCalls, subagentDepth)
 		for _, toolResult := range toolResults {
 			actions = append(actions, toolResult.Action)
 			emitProgressUpdate(emitProgress, latestContent, actions)

@@ -28,13 +28,7 @@ var sqliteConnectionHookOnce sync.Once
 func loadConfig() Config {
 	databaseURL := envOrDefault("DATABASE_URL", "sqlite+aiosqlite:////data/towel.db")
 	dataDir := envOrDefault("DATA_DIR", "/data")
-	apiPrefix := strings.TrimSpace(envOrDefault("API_PREFIX", "/api"))
-	if apiPrefix == "" {
-		apiPrefix = "/api"
-	}
-	if !strings.HasPrefix(apiPrefix, "/") {
-		apiPrefix = "/" + apiPrefix
-	}
+	apiPrefix := "/api"
 	corsRaw := envOrDefault("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000")
 	origins := make([]string, 0)
 	for _, origin := range strings.Split(corsRaw, ",") {

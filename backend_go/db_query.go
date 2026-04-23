@@ -268,7 +268,7 @@ func normalizeSQLValue(value any) any {
 }
 
 func (a *App) allToolDefinitions() []GmailToolDefinition {
-	definitions := make([]GmailToolDefinition, 0, len(gmailToolDefinitions)+8)
+	definitions := make([]GmailToolDefinition, 0, len(gmailToolDefinitions)+9)
 	definitions = append(definitions, gmailToolDefinitions...)
 	if semanticTool, ok := a.buildSemanticEmailSearchToolDefinition(); ok {
 		definitions = append(definitions, semanticTool)
@@ -276,6 +276,7 @@ func (a *App) allToolDefinitions() []GmailToolDefinition {
 	definitions = append(definitions, a.buildQueryDBToolDefinition())
 	definitions = append(definitions, buildCreateMemoryToolDefinition())
 	definitions = append(definitions, a.buildSearchMemoriesToolDefinition())
+	definitions = append(definitions, buildSpawnSubagentToolDefinition())
 	definitions = append(definitions, buildCreateScheduledTaskToolDefinition())
 	definitions = append(definitions, buildUpdateScheduledTaskToolDefinition())
 	definitions = append(definitions, buildSearchScheduledTasksToolDefinition())
@@ -291,6 +292,7 @@ func allToolDefinitionsSnapshot() []GmailToolDefinition {
 	definitions = append(definitions, gmailToolDefinitions...)
 	definitions = append(definitions, buildCreateMemoryToolDefinition())
 	definitions = append(definitions, buildStaticSearchMemoriesToolDefinition())
+	definitions = append(definitions, buildSpawnSubagentToolDefinition())
 	definitions = append(definitions, buildCreateScheduledTaskToolDefinition())
 	definitions = append(definitions, buildUpdateScheduledTaskToolDefinition())
 	definitions = append(definitions, buildSearchScheduledTasksToolDefinition())
