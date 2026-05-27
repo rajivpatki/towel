@@ -66,7 +66,8 @@ func decodeJSON(r *http.Request, target any) error {
 	if err := decoder.Decode(target); err != nil {
 		return fmt.Errorf("invalid request body: %w", err)
 	}
-	if decoder.More() {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
 		return errors.New("invalid request body: unexpected trailing data")
 	}
 	return nil

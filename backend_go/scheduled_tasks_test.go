@@ -321,6 +321,45 @@ func TestListScheduledTaskEmailCandidatesKeepsOnlyUserLabels(t *testing.T) {
 	}
 }
 
+func TestListScheduledTaskEmailCandidatesExcludesTrashSpamAndDeleted(t *testing.T) {
+	app := newTestApp(t)
+
+	if _, err := app.db.Exec(`
+		INSERT INTO synced_emails (
+			message_id,
+			thread_id,
+			is_in_inbox,
+			is_in_trash,
+			is_in_spam,
+			is_deleted,
+			internal_date_unix
+		)
+		VALUES
+			('active-inbox', 'thread-1', 1, 0, 0, 0, 400),
+			('moved-to-trash', 'thread-2', 0, 1, 0, 0, 300),
+			('moved-to-spam', 'thread-3', 0, 0, 1, 0, 200),
+			('deleted-message', 'thread-4', 0, 0, 0, 1, 100)
+	`); err != nil {
+		t.Fatalf("insert emails: %v", err)
+	}
+
+	candidates, err := app.listScheduledTaskEmailCandidates([]string{
+		"active-inbox",
+		"moved-to-trash",
+		"moved-to-spam",
+		"deleted-message",
+	})
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("len(candidates) = %d, want 1: %+v", len(candidates), candidates)
+	}
+	if candidates[0].MessageID != "active-inbox" {
+		t.Fatalf("candidate = %q, want active-inbox", candidates[0].MessageID)
+	}
+}
+
 func TestCreateScheduledTaskUnlabelledClearsLabelNames(t *testing.T) {
 	app := newTestApp(t)
 

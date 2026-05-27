@@ -744,16 +744,15 @@ func (a *App) gmailUsersThreadsGet(accessToken string, arguments map[string]any)
 	return string(body), status, nil
 }
 
-// Helper: decode base64url encoded strings
 func decodeBase64URL(s string) string {
-	// Replace base64url characters with standard base64
-	s = strings.ReplaceAll(s, "-", "+")
-	s = strings.ReplaceAll(s, "_", "/")
-	// Add padding if needed
-	for len(s)%4 != 0 {
-		s += "="
+	trimmed := strings.TrimSpace(s)
+	if trimmed == "" {
+		return ""
 	}
-	decoded, err := base64.StdEncoding.DecodeString(s)
+	decoded, err := base64.RawURLEncoding.DecodeString(trimmed)
+	if err != nil {
+		decoded, err = base64.URLEncoding.DecodeString(trimmed)
+	}
 	if err != nil {
 		return ""
 	}

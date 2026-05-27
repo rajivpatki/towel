@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"html"
 	"io"
 	"log"
 	"net/http"
@@ -95,7 +94,7 @@ func (a *App) handleGoogleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	sessionID, err := a.completeGoogleOAuthCallback(code, state)
 	if err != nil {
-		http.Redirect(w, r, "http://localhost:3000/setup/gmail?oauth=error&msg="+html.EscapeString(err.Error()), http.StatusSeeOther)
+		http.Redirect(w, r, "http://localhost:3000/setup/gmail?oauth=error&msg="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 		return
 	}
 	// Set session cookie for API authentication
@@ -705,7 +704,7 @@ func (a *App) handleProfileImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := http.NewRequest(http.MethodGet, imageURL, nil)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, imageURL, nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Failed to create request")
 		return

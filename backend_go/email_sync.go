@@ -18,6 +18,23 @@ const (
 
 var errEmailHistoryExpired = errors.New("gmail history cursor expired")
 
+var freshMailboxKeywords = []string{
+	"latest",
+	"recent",
+	"new email",
+	"new emails",
+	"today",
+	"just now",
+	"right now",
+	"currently",
+	"current",
+	"fresh",
+	"newest",
+	"unread",
+	"since this morning",
+	"since yesterday",
+}
+
 type EmailSyncStatus struct {
 	MailboxEmail                  string `json:"mailbox_email"`
 	SyncStatus                    string `json:"sync_status"`
@@ -115,23 +132,7 @@ func requestNeedsFreshMailboxData(userMessage string) bool {
 	if value == "" {
 		return false
 	}
-	keywords := []string{
-		"latest",
-		"recent",
-		"new email",
-		"new emails",
-		"today",
-		"just now",
-		"right now",
-		"currently",
-		"current",
-		"fresh",
-		"newest",
-		"unread",
-		"since this morning",
-		"since yesterday",
-	}
-	for _, keyword := range keywords {
+	for _, keyword := range freshMailboxKeywords {
 		if strings.Contains(value, keyword) {
 			return true
 		}

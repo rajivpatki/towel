@@ -33,6 +33,19 @@ var outerLimitedDBStatementPrefix = regexp.MustCompile(`(?is)^\s*(select|with)\b
 
 const defaultQueryDBToolLimit = 200
 
+var forbiddenDBQueryReferences = []string{
+	"secret_records",
+	"user_sessions",
+	"conversation_messages",
+	"conversations",
+	"custom_agents",
+	"preferences",
+	"memories",
+	"memory_embeddings",
+	"memory_embedding_index",
+	"setup_state",
+}
+
 func (a *App) handleEmailSyncStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -183,7 +196,7 @@ func (a *App) executeSafeDBQuery(rawSQL string, maxRows int) (DBQueryResponse, e
 	if err != nil {
 		return DBQueryResponse{}, err
 	}
-	items := make([]map[string]any, 0)
+	items := make([]map[string]any, 0, maxRows)
 	truncated := false
 	for rows.Next() {
 		if len(items) >= maxRows {
@@ -240,7 +253,7 @@ func validateSafeDBQuery(rawSQL string) error {
 		return fmt.Errorf("only a single SQL statement is allowed")
 	}
 	lower := strings.ToLower(value)
-	for _, forbidden := range []string{"secret_records", "user_sessions", "conversation_messages", "conversations", "custom_agents", "preferences", "memories", "memory_embeddings", "memory_embedding_index", "setup_state"} {
+	for _, forbidden := range forbiddenDBQueryReferences {
 		if strings.Contains(lower, forbidden) {
 			return fmt.Errorf("query contains a forbidden table reference: %s", strings.TrimSpace(forbidden))
 		}

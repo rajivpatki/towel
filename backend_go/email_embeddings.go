@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -32,8 +33,11 @@ const (
 )
 
 var (
-	replyHeaderLinePattern = regexp.MustCompile(`(?i)^on .+wrote:$`)
-	headerBlockLinePattern = regexp.MustCompile(`(?i)^(from|sent|to|cc|bcc|subject):`)
+	replyHeaderLinePattern  = regexp.MustCompile(`(?i)^on .+wrote:$`)
+	headerBlockLinePattern  = regexp.MustCompile(`(?i)^(from|sent|to|cc|bcc|subject):`)
+	emailBodySourceReplacer = strings.NewReplacer("\r\n", "\n", "\r", "\n", "\u00a0", " ", "\u200b", "", "\u200c", "", "\u200d", "", "\ufeff", "")
+	emailBoilerplateMarkers = []string{"unsubscribe", "manage preferences", "view in browser", "privacy policy", "terms of service", "update your preferences", "mailing address"}
+	textBoundarySeparators  = []string{"\n\n", ". ", "! ", "? ", "; ", ", "}
 )
 
 type emailEmbeddingConfig struct {
@@ -909,16 +913,7 @@ func normalizeEmailBodySource(value string) string {
 	if trimmed == "" {
 		return ""
 	}
-	replacer := strings.NewReplacer(
-		"\r\n", "\n",
-		"\r", "\n",
-		"\u00a0", " ",
-		"\u200b", "",
-		"\u200c", "",
-		"\u200d", "",
-		"\ufeff", "",
-	)
-	normalized := replacer.Replace(trimmed)
+	normalized := emailBodySourceReplacer.Replace(trimmed)
 	return strings.TrimSpace(normalized)
 }
 
@@ -1034,15 +1029,7 @@ func shouldStopForBoilerplate(trimmed string, index int, total int) bool {
 	if index < total/2 {
 		return false
 	}
-	for _, marker := range []string{
-		"unsubscribe",
-		"manage preferences",
-		"view in browser",
-		"privacy policy",
-		"terms of service",
-		"update your preferences",
-		"mailing address",
-	} {
+	for _, marker := range emailBoilerplateMarkers {
 		if strings.Contains(lower, marker) {
 			return true
 		}
@@ -1068,38 +1055,57 @@ func truncateTextPreservingBoundaries(value string, limit int) string {
 	if limit <= 0 || trimmed == "" {
 		return ""
 	}
-	runes := []rune(trimmed)
-	if len(runes) <= limit {
+	if len(trimmed) <= limit || utf8.RuneCountInString(trimmed) <= limit {
 		return trimmed
 	}
 
 	paragraphs := strings.Split(trimmed, "\n\n")
 	var builder strings.Builder
+	builder.Grow(min(len(trimmed), limit*2))
+	builderRunes := 0
 	for _, paragraph := range paragraphs {
 		paragraph = strings.TrimSpace(paragraph)
 		if paragraph == "" {
 			continue
 		}
-		candidate := paragraph
+		paragraphRunes := utf8.RuneCountInString(paragraph)
+		separatorRunes := 0
 		if builder.Len() > 0 {
-			candidate = "\n\n" + candidate
+			separatorRunes = 2
 		}
-		if len([]rune(builder.String()+candidate)) > limit {
+		if builderRunes+separatorRunes+paragraphRunes > limit {
 			break
 		}
-		builder.WriteString(candidate)
+		if separatorRunes > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString(paragraph)
+		builderRunes += separatorRunes + paragraphRunes
 	}
 	if builder.Len() > 0 {
 		return builder.String()
 	}
 
-	cut := string(runes[:limit])
-	for _, separator := range []string{"\n\n", ". ", "! ", "? ", "; ", ", "} {
+	cut := truncateRunes(trimmed, limit)
+	for _, separator := range textBoundarySeparators {
 		if position := strings.LastIndex(cut, separator); position >= limit/2 {
 			return strings.TrimSpace(cut[:position+len(separator)-1])
 		}
 	}
 	return strings.TrimSpace(cut)
+}
+
+func truncateRunes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	for index := range value {
+		if limit == 0 {
+			return value[:index]
+		}
+		limit--
+	}
+	return value
 }
 
 func (a *App) embedTexts(ctx context.Context, agent AgentDefinition, config emailEmbeddingConfig, credential string, texts []string, titles []string, taskType string) ([][]float32, error) {
@@ -1238,9 +1244,9 @@ func (a *App) embedTextsGemini(ctx context.Context, agent AgentDefinition, confi
 }
 
 func convertFloat64Slice(values []float64) []float32 {
-	converted := make([]float32, 0, len(values))
-	for _, value := range values {
-		converted = append(converted, float32(value))
+	converted := make([]float32, len(values))
+	for i, value := range values {
+		converted[i] = float32(value)
 	}
 	return converted
 }
@@ -1877,7 +1883,7 @@ func (a *App) searchEmailEmbeddings(options semanticEmailSearchOptions) (map[str
 	}
 	defer rows.Close()
 
-	results := make([]map[string]any, 0)
+	results := make([]map[string]any, 0, options.TopK)
 	for rows.Next() {
 		var embeddingID int64
 		var distance float64

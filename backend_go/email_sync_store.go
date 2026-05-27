@@ -363,8 +363,13 @@ func (a *App) fetchAndCacheGmailLabels() error {
 	if _, err := tx.Exec(`DELETE FROM gmail_labels`); err != nil {
 		return err
 	}
+	stmt, err := tx.Prepare(`INSERT INTO gmail_labels (label_id, label_name, label_type) VALUES (?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
 	for _, label := range response.Labels {
-		if _, err := tx.Exec(`INSERT INTO gmail_labels (label_id, label_name, label_type) VALUES (?, ?, ?)`, label.ID, label.Name, label.Type); err != nil {
+		if _, err := stmt.Exec(label.ID, label.Name, label.Type); err != nil {
 			return err
 		}
 	}
@@ -535,17 +540,31 @@ func (a *App) upsertSyncedEmail(message gmailMessageResource) (syncedEmailRecord
 	if _, err := tx.Exec(`DELETE FROM synced_email_labels WHERE message_id = ?`, record.MessageID); err != nil {
 		return syncedEmailRecord{}, err
 	}
-	for _, labelID := range record.LabelIDs {
-		if _, err := tx.Exec(`INSERT INTO synced_email_labels (message_id, label_id) VALUES (?, ?)`, record.MessageID, labelID); err != nil {
+	if len(record.LabelIDs) > 0 {
+		labelStmt, err := tx.Prepare(`INSERT INTO synced_email_labels (message_id, label_id) VALUES (?, ?)`)
+		if err != nil {
 			return syncedEmailRecord{}, err
+		}
+		defer labelStmt.Close()
+		for _, labelID := range record.LabelIDs {
+			if _, err := labelStmt.Exec(record.MessageID, labelID); err != nil {
+				return syncedEmailRecord{}, err
+			}
 		}
 	}
 	if _, err := tx.Exec(`DELETE FROM synced_email_attachments WHERE message_id = ?`, record.MessageID); err != nil {
 		return syncedEmailRecord{}, err
 	}
-	for _, attachment := range record.Attachments {
-		if _, err := tx.Exec(`INSERT INTO synced_email_attachments (message_id, filename, mime_type, size_estimate, attachment_id) VALUES (?, ?, ?, ?, ?)`, record.MessageID, attachment.Filename, nullIfEmpty(attachment.MimeType), attachment.SizeEstimate, nullIfEmpty(attachment.AttachmentID)); err != nil {
+	if len(record.Attachments) > 0 {
+		attachmentStmt, err := tx.Prepare(`INSERT INTO synced_email_attachments (message_id, filename, mime_type, size_estimate, attachment_id) VALUES (?, ?, ?, ?, ?)`)
+		if err != nil {
 			return syncedEmailRecord{}, err
+		}
+		defer attachmentStmt.Close()
+		for _, attachment := range record.Attachments {
+			if _, err := attachmentStmt.Exec(record.MessageID, attachment.Filename, nullIfEmpty(attachment.MimeType), attachment.SizeEstimate, nullIfEmpty(attachment.AttachmentID)); err != nil {
+				return syncedEmailRecord{}, err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -712,7 +731,6 @@ func buildSyncedEmailRecord(message gmailMessageResource) syncedEmailRecord {
 }
 
 func extractMessageContent(parts []gmailMessagePart, root gmailMessagePart) (string, string, int64, []string, int64, []syncedEmailAttachment) {
-	allParts := append([]gmailMessagePart{root}, parts...)
 	textParts := make([]string, 0)
 	htmlParts := make([]string, 0)
 	attachmentNames := make([]string, 0)
@@ -720,36 +738,43 @@ func extractMessageContent(parts []gmailMessagePart, root gmailMessagePart) (str
 	var bodySize int64
 	var attachmentTotalSize int64
 	var walk func(items []gmailMessagePart)
+	var walkPart func(part gmailMessagePart)
 	walk = func(items []gmailMessagePart) {
 		for _, part := range items {
-			if len(part.Parts) > 0 {
-				walk(part.Parts)
-			}
-			if strings.TrimSpace(part.Filename) != "" {
-				attachmentNames = append(attachmentNames, cleanWhitespace(part.Filename))
-				attachments = append(attachments, syncedEmailAttachment{
-					Filename:     cleanWhitespace(part.Filename),
-					MimeType:     cleanWhitespace(part.MimeType),
-					SizeEstimate: part.Body.Size,
-					AttachmentID: cleanWhitespace(part.Body.AttachmentID),
-				})
-				attachmentTotalSize += part.Body.Size
-				continue
-			}
-			decoded := decodeBase64URL(strings.TrimSpace(part.Body.Data))
-			if decoded == "" {
-				continue
-			}
-			if strings.HasPrefix(strings.ToLower(part.MimeType), "text/plain") {
-				textParts = append(textParts, decoded)
-				bodySize += part.Body.Size
-			} else if strings.HasPrefix(strings.ToLower(part.MimeType), "text/html") {
-				htmlParts = append(htmlParts, decoded)
-				bodySize += part.Body.Size
-			}
+			walkPart(part)
 		}
 	}
-	walk(allParts)
+	walkPart = func(part gmailMessagePart) {
+		if len(part.Parts) > 0 {
+			walk(part.Parts)
+		}
+		filename := cleanWhitespace(part.Filename)
+		if filename != "" {
+			attachmentNames = append(attachmentNames, filename)
+			attachments = append(attachments, syncedEmailAttachment{
+				Filename:     filename,
+				MimeType:     cleanWhitespace(part.MimeType),
+				SizeEstimate: part.Body.Size,
+				AttachmentID: cleanWhitespace(part.Body.AttachmentID),
+			})
+			attachmentTotalSize += part.Body.Size
+			return
+		}
+		decoded := decodeBase64URL(strings.TrimSpace(part.Body.Data))
+		if decoded == "" {
+			return
+		}
+		mimeType := strings.ToLower(part.MimeType)
+		if strings.HasPrefix(mimeType, "text/plain") {
+			textParts = append(textParts, decoded)
+			bodySize += part.Body.Size
+		} else if strings.HasPrefix(mimeType, "text/html") {
+			htmlParts = append(htmlParts, decoded)
+			bodySize += part.Body.Size
+		}
+	}
+	walkPart(root)
+	walk(parts)
 	return strings.Join(textParts, "\n\n"), strings.Join(htmlParts, "\n"), bodySize, normalizeStringSlice(attachmentNames), attachmentTotalSize, attachments
 }
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fernet/fernet-go"
 )
@@ -732,7 +733,7 @@ func (a *App) getConversationSummaries(limit int, offset int) ([]ConversationSum
 		return nil, err
 	}
 	defer rows.Close()
-	items := make([]ConversationSummary, 0)
+	items := make([]ConversationSummary, 0, limit)
 	for rows.Next() {
 		var item ConversationSummary
 		if err := rows.Scan(&item.ID, &item.Title, &item.UpdatedAt); err != nil {
@@ -868,11 +869,16 @@ func truncateString(value string, limit int) string {
 	if limit <= 0 {
 		return ""
 	}
-	runes := []rune(value)
-	if len(runes) <= limit {
+	if len(value) <= limit || utf8.RuneCountInString(value) <= limit {
 		return value
 	}
-	return string(runes[:limit])
+	for index := range value {
+		if limit == 0 {
+			return value[:index]
+		}
+		limit--
+	}
+	return value
 }
 
 func (a *App) createSession(email string, name string, picture string) (string, error) {

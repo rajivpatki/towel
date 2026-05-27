@@ -1139,7 +1139,11 @@ func (a *App) listScheduledTaskEmailCandidates(messageIDs []string) ([]scheduled
 			COALESCE(sel.label_type, '')
 		FROM synced_emails se
 		LEFT JOIN synced_email_labels_with_names sel ON sel.message_id = se.message_id
-		WHERE se.is_deleted = 0 AND se.message_id IN (`+placeholders+`)
+		WHERE
+			se.is_deleted = 0
+			AND COALESCE(se.is_in_trash, 0) = 0
+			AND COALESCE(se.is_in_spam, 0) = 0
+			AND se.message_id IN (`+placeholders+`)
 		ORDER BY se.internal_date_unix DESC, se.message_id, sel.label_name
 	`, args...)
 	if err != nil {

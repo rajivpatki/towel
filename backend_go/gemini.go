@@ -174,13 +174,16 @@ func interpretGeminiSetupFailure(statusCode int, body []byte) GeminiSetupOut {
 
 func (a *App) callGeminiLLM(ctx context.Context, agent AgentDefinition, accessToken string, systemPrompt string, history []ConversationMessage, emitProgress func(string, []string), subagentDepth int) (string, []string, error) {
 	contents := buildGeminiConversation(history)
+	toolDefinitions := allToolDefinitionsSnapshot()
+	tools := buildGeminiToolsPayload(toolDefinitions)
+	toolDefinitionsByFunctionName := indexToolDefinitionsByFunctionName(toolDefinitions)
 	actions := make([]string, 0)
 	latestContent := ""
 	for iteration := 0; iteration < maxToolCallIterations; iteration++ {
 		if err := ctx.Err(); err != nil {
 			return "", actions, err
 		}
-		candidate, message, err := a.callGeminiOnce(ctx, agent, accessToken, systemPrompt, contents)
+		candidate, message, err := a.callGeminiOnce(ctx, agent, accessToken, systemPrompt, contents, tools)
 		if err != nil {
 			return "", actions, err
 		}
@@ -196,7 +199,7 @@ func (a *App) callGeminiLLM(ctx context.Context, agent AgentDefinition, accessTo
 			return content, actions, nil
 		}
 		contents = append(contents, candidate.Content)
-		toolResults := a.executeToolCallsParallel(ctx, agent, accessToken, message.ToolCalls, subagentDepth)
+		toolResults := a.executeToolCallsParallel(ctx, agent, accessToken, message.ToolCalls, subagentDepth, toolDefinitionsByFunctionName)
 		for _, toolResult := range toolResults {
 			actions = append(actions, toolResult.Action)
 			emitProgressUpdate(emitProgress, latestContent, actions)
@@ -282,8 +285,7 @@ func sanitizeGeminiParameters(parameters map[string]any) map[string]any {
 	return sanitized
 }
 
-func buildGeminiToolsPayload() []map[string]any {
-	definitions := allToolDefinitionsSnapshot()
+func buildGeminiToolsPayload(definitions []GmailToolDefinition) []map[string]any {
 	declarations := make([]map[string]any, 0, len(definitions))
 	for _, tool := range definitions {
 		parameters := sanitizeGeminiParameters(tool.Parameters)
@@ -298,7 +300,7 @@ func buildGeminiToolsPayload() []map[string]any {
 	}}
 }
 
-func (a *App) callGeminiOnce(ctx context.Context, agent AgentDefinition, accessToken string, systemPrompt string, contents []geminiContent) (geminiGenerateCandidate, llmResponseMessage, error) {
+func (a *App) callGeminiOnce(ctx context.Context, agent AgentDefinition, accessToken string, systemPrompt string, contents []geminiContent, tools []map[string]any) (geminiGenerateCandidate, llmResponseMessage, error) {
 	requestPayload := map[string]any{
 		"systemInstruction": map[string]any{
 			"parts": []map[string]any{{
@@ -306,7 +308,7 @@ func (a *App) callGeminiOnce(ctx context.Context, agent AgentDefinition, accessT
 			}},
 		},
 		"contents": contents,
-		"tools":    buildGeminiToolsPayload(),
+		"tools":    tools,
 		"toolConfig": map[string]any{
 			"functionCallingConfig": map[string]any{
 				"mode": "AUTO",
