@@ -333,10 +333,6 @@ function Development({ initialSyncStatus, onStatusChange }) {
               </div>
             ) : null}
 
-            <div className="development-query-summary">
-              <code>{queryResult.sql}</code>
-            </div>
-
             <div className="development-table-wrapper">
               <table className="development-table">
                 <thead>
