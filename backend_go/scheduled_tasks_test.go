@@ -176,6 +176,169 @@ func TestHandleScheduledTasksSearchUsesPagination(t *testing.T) {
 	}
 }
 
+func TestFilterScheduledTaskCandidatesRequiresCanonicalInboxState(t *testing.T) {
+	task := ScheduledTaskItem{
+		RequireInInbox: true,
+	}
+	candidates := []scheduledTaskEmailCandidate{
+		{
+			MessageID: "archived-with-stale-label",
+			IsInInbox: false,
+			LabelNames: []string{
+				"INBOX",
+				"Alerts",
+			},
+		},
+		{
+			MessageID: "inbox-message",
+			IsInInbox: true,
+			LabelNames: []string{
+				"Alerts",
+			},
+		},
+	}
+
+	matched := filterScheduledTaskCandidates(task, candidates)
+	if len(matched) != 1 {
+		t.Fatalf("len(matched) = %d, want 1", len(matched))
+	}
+	if matched[0].MessageID != "inbox-message" {
+		t.Fatalf("matched message = %q, want inbox-message", matched[0].MessageID)
+	}
+}
+
+func TestFilterScheduledTaskCandidatesAppliesInboxAndLabelFilters(t *testing.T) {
+	task := ScheduledTaskItem{
+		RequireInInbox: true,
+		LabelNames:     []string{"Alerts"},
+	}
+	candidates := []scheduledTaskEmailCandidate{
+		{
+			MessageID:  "inbox-alert",
+			IsInInbox:  true,
+			LabelNames: []string{"Alerts"},
+		},
+		{
+			MessageID:  "archived-alert",
+			IsInInbox:  false,
+			LabelNames: []string{"Alerts"},
+		},
+		{
+			MessageID:  "inbox-other-label",
+			IsInInbox:  true,
+			LabelNames: []string{"Other"},
+		},
+	}
+
+	matched := filterScheduledTaskCandidates(task, candidates)
+	if len(matched) != 1 {
+		t.Fatalf("len(matched) = %d, want 1", len(matched))
+	}
+	if matched[0].MessageID != "inbox-alert" {
+		t.Fatalf("matched message = %q, want inbox-alert", matched[0].MessageID)
+	}
+}
+
+func TestFilterScheduledTaskCandidatesRequiresInboxAndNoUserLabels(t *testing.T) {
+	task := ScheduledTaskItem{
+		RequireNoUserLabels: true,
+	}
+	candidates := []scheduledTaskEmailCandidate{
+		{
+			MessageID:  "inbox-system-labels-only",
+			IsInInbox:  true,
+			LabelNames: nil,
+		},
+		{
+			MessageID:  "archived-system-labels-only",
+			IsInInbox:  false,
+			LabelNames: nil,
+		},
+		{
+			MessageID:  "inbox-user-label",
+			IsInInbox:  true,
+			LabelNames: []string{"Alerts"},
+		},
+	}
+
+	matched := filterScheduledTaskCandidates(task, candidates)
+	if len(matched) != 1 {
+		t.Fatalf("len(matched) = %d, want 1", len(matched))
+	}
+	if matched[0].MessageID != "inbox-system-labels-only" {
+		t.Fatalf("matched message = %q, want inbox-system-labels-only", matched[0].MessageID)
+	}
+}
+
+func TestListScheduledTaskEmailCandidatesKeepsOnlyUserLabels(t *testing.T) {
+	app := newTestApp(t)
+
+	if _, err := app.db.Exec(`
+		INSERT INTO synced_emails (message_id, thread_id, is_in_inbox, internal_date_unix)
+		VALUES ('msg-system-only', 'thread-1', 1, 200), ('msg-user-label', 'thread-2', 1, 100)
+	`); err != nil {
+		t.Fatalf("insert emails: %v", err)
+	}
+	if _, err := app.db.Exec(`
+		INSERT INTO gmail_labels (label_id, label_name, label_type)
+		VALUES
+			('INBOX', 'INBOX', 'system'),
+			('CATEGORY_UPDATES', 'Updates', 'system'),
+			('Label_123', 'Alerts', 'user')
+	`); err != nil {
+		t.Fatalf("insert labels: %v", err)
+	}
+	if _, err := app.db.Exec(`
+		INSERT INTO synced_email_labels (message_id, label_id)
+		VALUES
+			('msg-system-only', 'INBOX'),
+			('msg-system-only', 'CATEGORY_UPDATES'),
+			('msg-user-label', 'INBOX'),
+			('msg-user-label', 'CATEGORY_UPDATES'),
+			('msg-user-label', 'Label_123')
+	`); err != nil {
+		t.Fatalf("insert email labels: %v", err)
+	}
+
+	candidates, err := app.listScheduledTaskEmailCandidates([]string{"msg-system-only", "msg-user-label"})
+	if err != nil {
+		t.Fatalf("list candidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("len(candidates) = %d, want 2", len(candidates))
+	}
+	if candidates[0].MessageID != "msg-system-only" {
+		t.Fatalf("first candidate = %q, want msg-system-only", candidates[0].MessageID)
+	}
+	if len(candidates[0].LabelNames) != 0 {
+		t.Fatalf("system-only labels = %v, want none", candidates[0].LabelNames)
+	}
+	if candidates[1].MessageID != "msg-user-label" {
+		t.Fatalf("second candidate = %q, want msg-user-label", candidates[1].MessageID)
+	}
+	if len(candidates[1].LabelNames) != 1 || candidates[1].LabelNames[0] != "Alerts" {
+		t.Fatalf("user-label labels = %v, want [Alerts]", candidates[1].LabelNames)
+	}
+}
+
+func TestCreateScheduledTaskUnlabelledClearsLabelNames(t *testing.T) {
+	app := newTestApp(t)
+
+	item, err := app.createScheduledTask("Unlabelled inbox", "Process unlabelled inbox emails.", true, false, true, []string{"Alerts"}, "test")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if !item.RequireNoUserLabels {
+		t.Fatalf("RequireNoUserLabels = false, want true")
+	}
+	if !item.RequireInInbox {
+		t.Fatalf("RequireInInbox = false, want true")
+	}
+	if len(item.LabelNames) != 0 {
+		t.Fatalf("LabelNames = %v, want none", item.LabelNames)
+	}
+}
+
 func TestBuildSearchScheduledTasksToolDefinitionIncludesListPagination(t *testing.T) {
 	definition := buildSearchScheduledTasksToolDefinition()
 
@@ -210,6 +373,25 @@ func TestBuildSearchScheduledTasksToolDefinitionIncludesListPagination(t *testin
 	}
 	if _, hasRequired := definition.Parameters["required"]; hasRequired {
 		t.Fatalf("required should be omitted for optional list-mode query")
+	}
+}
+
+func TestBuildCreateScheduledTaskToolDefinitionIncludesUnlabelledFilter(t *testing.T) {
+	definition := buildCreateScheduledTaskToolDefinition()
+	properties, ok := definition.Parameters["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("properties type = %T, want map[string]any", definition.Parameters["properties"])
+	}
+	unlabelledSchema, ok := properties["require_no_user_labels"].(map[string]any)
+	if !ok {
+		t.Fatalf("require_no_user_labels schema type = %T, want map[string]any", properties["require_no_user_labels"])
+	}
+	description, _ := unlabelledSchema["description"].(string)
+	if !strings.Contains(description, "no user-created Gmail labels") {
+		t.Fatalf("unlabelled description missing user-label semantics: %q", description)
+	}
+	if !strings.Contains(description, "system labels") {
+		t.Fatalf("unlabelled description missing system-label guidance: %q", description)
 	}
 }
 

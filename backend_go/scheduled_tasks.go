@@ -30,6 +30,7 @@ type ScheduledTaskItem struct {
 	Instruction         string   `json:"instruction"`
 	Enabled             bool     `json:"enabled"`
 	RequireInInbox      bool     `json:"require_in_inbox"`
+	RequireNoUserLabels bool     `json:"require_no_user_labels"`
 	LabelNames          []string `json:"label_names"`
 	LastRunStartedAt    string   `json:"last_run_started_at,omitempty"`
 	LastRunCompletedAt  string   `json:"last_run_completed_at,omitempty"`
@@ -52,19 +53,21 @@ type ScheduledTasksOut struct {
 }
 
 type ScheduledTaskCreateIn struct {
-	Title          string   `json:"title"`
-	Instruction    string   `json:"instruction"`
-	Enabled        bool     `json:"enabled"`
-	RequireInInbox bool     `json:"require_in_inbox"`
-	LabelNames     []string `json:"label_names"`
+	Title               string   `json:"title"`
+	Instruction         string   `json:"instruction"`
+	Enabled             bool     `json:"enabled"`
+	RequireInInbox      bool     `json:"require_in_inbox"`
+	RequireNoUserLabels bool     `json:"require_no_user_labels"`
+	LabelNames          []string `json:"label_names"`
 }
 
 type ScheduledTaskUpdateIn struct {
-	Title          string   `json:"title"`
-	Instruction    string   `json:"instruction"`
-	Enabled        bool     `json:"enabled"`
-	RequireInInbox bool     `json:"require_in_inbox"`
-	LabelNames     []string `json:"label_names"`
+	Title               string   `json:"title"`
+	Instruction         string   `json:"instruction"`
+	Enabled             bool     `json:"enabled"`
+	RequireInInbox      bool     `json:"require_in_inbox"`
+	RequireNoUserLabels bool     `json:"require_no_user_labels"`
+	LabelNames          []string `json:"label_names"`
 }
 
 type ScheduledTaskDeleteIn struct {
@@ -172,6 +175,39 @@ func scheduledTaskLabelSearchText(labels []string) string {
 	return strings.Join(parts, " ")
 }
 
+func isGmailSystemLabel(labelID string, labelName string) bool {
+	normalizedID := strings.ToUpper(strings.TrimSpace(labelID))
+	normalizedName := strings.ToUpper(strings.TrimSpace(labelName))
+	switch normalizedID {
+	case "INBOX", "SENT", "DRAFT", "TRASH", "SPAM", "UNREAD", "STARRED", "IMPORTANT", "CHAT",
+		"CATEGORY_PERSONAL", "CATEGORY_SOCIAL", "CATEGORY_PROMOTIONS", "CATEGORY_UPDATES", "CATEGORY_FORUMS":
+		return true
+	}
+	if strings.HasPrefix(normalizedID, "CATEGORY_") {
+		return true
+	}
+	switch normalizedName {
+	case "INBOX", "SENT", "DRAFT", "TRASH", "SPAM", "UNREAD", "STARRED", "IMPORTANT", "CHAT",
+		"PERSONAL", "SOCIAL", "PROMOTIONS", "UPDATES", "FORUMS",
+		"CATEGORY_PERSONAL", "CATEGORY_SOCIAL", "CATEGORY_PROMOTIONS", "CATEGORY_UPDATES", "CATEGORY_FORUMS":
+		return true
+	}
+	return false
+}
+
+func isUserCreatedGmailLabel(labelID string, labelName string, labelType string) bool {
+	switch strings.ToLower(strings.TrimSpace(labelType)) {
+	case "user":
+		return true
+	case "system":
+		return false
+	}
+	if isGmailSystemLabel(labelID, labelName) {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimSpace(labelID), "Label_")
+}
+
 func stringSliceArgument(value any) []string {
 	switch typed := value.(type) {
 	case []string:
@@ -197,6 +233,7 @@ func scanScheduledTaskItem(scanner interface {
 	var item ScheduledTaskItem
 	var enabled int
 	var requireInInbox int
+	var requireNoUserLabels int
 	var labelNamesJSON sql.NullString
 	if err := scanner.Scan(
 		&item.ID,
@@ -204,6 +241,7 @@ func scanScheduledTaskItem(scanner interface {
 		&item.Instruction,
 		&enabled,
 		&requireInInbox,
+		&requireNoUserLabels,
 		&labelNamesJSON,
 		&item.LastRunStartedAt,
 		&item.LastRunCompletedAt,
@@ -220,19 +258,21 @@ func scanScheduledTaskItem(scanner interface {
 	}
 	item.Enabled = enabled != 0
 	item.RequireInInbox = requireInInbox != 0
+	item.RequireNoUserLabels = requireNoUserLabels != 0
 	item.LabelNames = decodeScheduledTaskLabelNames(labelNamesJSON.String)
 	return item, nil
 }
 
 func (a *App) getScheduledTaskByID(id int64) (ScheduledTaskItem, error) {
 	row := a.db.QueryRow(`
-		SELECT
-			id,
-			title,
-			instruction,
-			enabled,
-			require_in_inbox,
-			COALESCE(label_names_json, ''),
+			SELECT
+				id,
+				title,
+				instruction,
+				enabled,
+				require_in_inbox,
+				require_no_user_labels,
+				COALESCE(label_names_json, ''),
 			COALESCE(last_run_started_at, ''),
 			COALESCE(last_run_completed_at, ''),
 			COALESCE(last_run_status, ''),
@@ -251,13 +291,14 @@ func (a *App) getScheduledTaskByID(id int64) (ScheduledTaskItem, error) {
 
 func (a *App) listEnabledScheduledTasks() ([]ScheduledTaskItem, error) {
 	rows, err := a.db.Query(`
-		SELECT
-			id,
-			title,
-			instruction,
-			enabled,
-			require_in_inbox,
-			COALESCE(label_names_json, ''),
+			SELECT
+				id,
+				title,
+				instruction,
+				enabled,
+				require_in_inbox,
+				require_no_user_labels,
+				COALESCE(label_names_json, ''),
 			COALESCE(last_run_started_at, ''),
 			COALESCE(last_run_completed_at, ''),
 			COALESCE(last_run_status, ''),
@@ -294,13 +335,14 @@ func (a *App) listScheduledTasks(page int, pageSize int) ([]ScheduledTaskItem, b
 	pageSize = clampScheduledTaskPageSize(pageSize)
 	offset := (page - 1) * pageSize
 	rows, err := a.db.Query(`
-		SELECT
-			id,
-			title,
-			instruction,
-			enabled,
-			require_in_inbox,
-			COALESCE(label_names_json, ''),
+			SELECT
+				id,
+				title,
+				instruction,
+				enabled,
+				require_in_inbox,
+				require_no_user_labels,
+				COALESCE(label_names_json, ''),
 			COALESCE(last_run_started_at, ''),
 			COALESCE(last_run_completed_at, ''),
 			COALESCE(last_run_status, ''),
@@ -347,13 +389,14 @@ func (a *App) searchScheduledTaskItems(query string) ([]ScheduledTaskItem, error
 		return nil, errors.New("query is required")
 	}
 	baseQuery := `
-		SELECT
-			id,
-			title,
-			instruction,
-			enabled,
-			require_in_inbox,
-			COALESCE(label_names_json, ''),
+			SELECT
+				id,
+				title,
+				instruction,
+				enabled,
+				require_in_inbox,
+				require_no_user_labels,
+				COALESCE(label_names_json, ''),
 			COALESCE(last_run_started_at, ''),
 			COALESCE(last_run_completed_at, ''),
 			COALESCE(last_run_status, ''),
@@ -402,13 +445,14 @@ func (a *App) searchScheduledTaskItemsPage(query string, page int, pageSize int)
 		return a.listScheduledTasks(page, pageSize)
 	}
 	baseQuery := `
-		SELECT
-			id,
-			title,
-			instruction,
-			enabled,
-			require_in_inbox,
-			COALESCE(label_names_json, ''),
+			SELECT
+				id,
+				title,
+				instruction,
+				enabled,
+				require_in_inbox,
+				require_no_user_labels,
+				COALESCE(label_names_json, ''),
 			COALESCE(last_run_started_at, ''),
 			COALESCE(last_run_completed_at, ''),
 			COALESCE(last_run_status, ''),
@@ -452,27 +496,32 @@ func (a *App) searchScheduledTaskItemsPage(query string, page int, pageSize int)
 	return items, hasMore, nil
 }
 
-func (a *App) createScheduledTask(title string, instruction string, enabled bool, requireInInbox bool, labelNames []string, reason string) (ScheduledTaskItem, error) {
+func (a *App) createScheduledTask(title string, instruction string, enabled bool, requireInInbox bool, requireNoUserLabels bool, labelNames []string, reason string) (ScheduledTaskItem, error) {
 	normalizedTitle := normalizeScheduledTaskTitle(title)
 	normalizedInstruction := normalizeScheduledTaskInstruction(instruction)
 	normalizedLabels := normalizeScheduledTaskLabelNames(labelNames)
+	if requireNoUserLabels {
+		requireInInbox = true
+		normalizedLabels = nil
+	}
 	if normalizedTitle == "" {
 		return ScheduledTaskItem{}, errors.New("title is required")
 	}
 	if normalizedInstruction == "" {
 		return ScheduledTaskItem{}, errors.New("instruction is required")
 	}
-	log.Printf("scheduled task create: reason=%s title=%q enabled=%t inbox=%t labels=%d", reason, normalizedTitle, enabled, requireInInbox, len(normalizedLabels))
+	log.Printf("scheduled task create: reason=%s title=%q enabled=%t inbox=%t unlabelled=%t labels=%d", reason, normalizedTitle, enabled, requireInInbox, requireNoUserLabels, len(normalizedLabels))
 	result, err := a.db.Exec(`
 		INSERT INTO scheduled_tasks (
 			title,
 			instruction,
 			enabled,
 			require_in_inbox,
+			require_no_user_labels,
 			label_names_json,
 			label_names_search_text
-		) VALUES (?, ?, ?, ?, ?, ?)
-	`, normalizedTitle, normalizedInstruction, boolToInt(enabled), boolToInt(requireInInbox), nullIfEmpty(encodeScheduledTaskLabelNames(normalizedLabels)), nullIfEmpty(scheduledTaskLabelSearchText(normalizedLabels)))
+		) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, normalizedTitle, normalizedInstruction, boolToInt(enabled), boolToInt(requireInInbox), boolToInt(requireNoUserLabels), nullIfEmpty(encodeScheduledTaskLabelNames(normalizedLabels)), nullIfEmpty(scheduledTaskLabelSearchText(normalizedLabels)))
 	if err != nil {
 		return ScheduledTaskItem{}, err
 	}
@@ -488,20 +537,24 @@ func (a *App) createScheduledTask(title string, instruction string, enabled bool
 	return item, nil
 }
 
-func (a *App) updateScheduledTask(id int64, title string, instruction string, enabled bool, requireInInbox bool, labelNames []string, reason string) (ScheduledTaskItem, error) {
+func (a *App) updateScheduledTask(id int64, title string, instruction string, enabled bool, requireInInbox bool, requireNoUserLabels bool, labelNames []string, reason string) (ScheduledTaskItem, error) {
 	if id <= 0 {
 		return ScheduledTaskItem{}, errors.New("scheduled_task_id is invalid")
 	}
 	normalizedTitle := normalizeScheduledTaskTitle(title)
 	normalizedInstruction := normalizeScheduledTaskInstruction(instruction)
 	normalizedLabels := normalizeScheduledTaskLabelNames(labelNames)
+	if requireNoUserLabels {
+		requireInInbox = true
+		normalizedLabels = nil
+	}
 	if normalizedTitle == "" {
 		return ScheduledTaskItem{}, errors.New("title is required")
 	}
 	if normalizedInstruction == "" {
 		return ScheduledTaskItem{}, errors.New("instruction is required")
 	}
-	log.Printf("scheduled task update: reason=%s task_id=%d title=%q enabled=%t inbox=%t labels=%d", reason, id, normalizedTitle, enabled, requireInInbox, len(normalizedLabels))
+	log.Printf("scheduled task update: reason=%s task_id=%d title=%q enabled=%t inbox=%t unlabelled=%t labels=%d", reason, id, normalizedTitle, enabled, requireInInbox, requireNoUserLabels, len(normalizedLabels))
 	result, err := a.db.Exec(`
 		UPDATE scheduled_tasks
 		SET
@@ -509,11 +562,12 @@ func (a *App) updateScheduledTask(id int64, title string, instruction string, en
 			instruction = ?,
 			enabled = ?,
 			require_in_inbox = ?,
+			require_no_user_labels = ?,
 			label_names_json = ?,
 			label_names_search_text = ?,
 			updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, normalizedTitle, normalizedInstruction, boolToInt(enabled), boolToInt(requireInInbox), nullIfEmpty(encodeScheduledTaskLabelNames(normalizedLabels)), nullIfEmpty(scheduledTaskLabelSearchText(normalizedLabels)), id)
+	`, normalizedTitle, normalizedInstruction, boolToInt(enabled), boolToInt(requireInInbox), boolToInt(requireNoUserLabels), nullIfEmpty(encodeScheduledTaskLabelNames(normalizedLabels)), nullIfEmpty(scheduledTaskLabelSearchText(normalizedLabels)), id)
 	if err != nil {
 		return ScheduledTaskItem{}, err
 	}
@@ -562,7 +616,7 @@ func buildCreateScheduledTaskToolDefinition() GmailToolDefinition {
 		SafetyModel:  "safe_write",
 		Description: strings.Join([]string{
 			"Create a scheduled email task that runs automatically whenever mailbox refresh sync detects new or modified emails.",
-			"Each run only sees the emails updated in that sync tick, then applies optional task filters such as requiring Inbox or matching any configured label name.",
+			"Each run only sees the emails updated in that sync tick, then applies optional task filters such as requiring Inbox, requiring no user-created labels, or matching any configured user label name.",
 			"Use search_scheduled_tasks first when you suspect a similar task already exists.",
 		}, " "),
 		Parameters: gmailObjectSchema(
@@ -588,10 +642,15 @@ func buildCreateScheduledTaskToolDefinition() GmailToolDefinition {
 					`{"require_in_inbox":true}`,
 					`{"require_in_inbox":false}`,
 				)),
+				"require_no_user_labels": gmailBooleanSchema(gmailDescription(
+					"If true, only run this task for updated emails with no user-created Gmail labels. Gmail system labels such as Inbox and category labels are ignored for this check.",
+					`{"require_no_user_labels":true}`,
+					`{"require_no_user_labels":false}`,
+				)),
 				"label_names": gmailStringArraySchema(gmailDescription(
-					"Optional label-name filter. When provided, the task only runs on updated emails that match at least one of these label names. Matching is case-insensitive and works with Gmail system labels like `INBOX` as well as user label names.",
+					"Optional user label-name filter. When provided, the task only runs on updated emails that match at least one user-created label name. Matching is case-insensitive; use require_in_inbox instead of `INBOX`.",
 					`{"label_names":["Finance","Invoices"]}`,
-					`{"label_names":["CATEGORY_UPDATES","Build Alerts"]}`,
+					`{"label_names":["Build Alerts"]}`,
 				)),
 			},
 			"title",
@@ -614,11 +673,12 @@ func buildUpdateScheduledTaskToolDefinition() GmailToolDefinition {
 					`{"id":12,"enabled":false}`,
 					`{"id":7,"label_names":["INBOX"]}`,
 				)),
-				"title":            gmailStringSchema("Optional replacement title."),
-				"instruction":      gmailStringSchema("Optional replacement instruction."),
-				"enabled":          gmailBooleanSchema("Optional replacement enabled state."),
-				"require_in_inbox": gmailBooleanSchema("Optional replacement Inbox filter."),
-				"label_names":      gmailStringArraySchema("Optional replacement label-name filter list. Provide an empty array to clear the label filter."),
+				"title":                  gmailStringSchema("Optional replacement title."),
+				"instruction":            gmailStringSchema("Optional replacement instruction."),
+				"enabled":                gmailBooleanSchema("Optional replacement enabled state."),
+				"require_in_inbox":       gmailBooleanSchema("Optional replacement Inbox filter."),
+				"require_no_user_labels": gmailBooleanSchema("Optional replacement no-user-labels filter. Gmail system labels such as Inbox and category labels are ignored for this check."),
+				"label_names":            gmailStringArraySchema("Optional replacement user label-name filter list. Provide an empty array to clear the label filter."),
 			},
 			"id",
 		),
@@ -710,7 +770,8 @@ func (a *App) executeCreateScheduledTaskTool(arguments map[string]any) (string, 
 	}
 	requireInInbox, _ := optionalBoolArgument(arguments["require_in_inbox"])
 	labelNames := stringSliceArgument(arguments["label_names"])
-	item, err := a.createScheduledTask(title, instruction, enabled, requireInInbox, labelNames, "tool")
+	requireNoUserLabels, _ := optionalBoolArgument(arguments["require_no_user_labels"])
+	item, err := a.createScheduledTask(title, instruction, enabled, requireInInbox, requireNoUserLabels, labelNames, "tool")
 	if err != nil {
 		return "", err
 	}
@@ -722,7 +783,8 @@ func (a *App) executeCreateScheduledTaskTool(arguments map[string]any) (string, 
 			"trigger":              "email_refresh_tick",
 			"updated_email_scope":  "new_or_modified_emails_detected_in_each_sync_tick",
 			"filter_application":   "after_updated_email_selection",
-			"basic_label_matching": "case_insensitive_any_match",
+			"basic_label_matching": "case_insensitive_user_label_any_match",
+			"unlabelled_matching":  "no_user_created_labels_ignoring_gmail_system_labels",
 		},
 	})
 	if err != nil {
@@ -767,11 +829,19 @@ func (a *App) executeUpdateScheduledTaskTool(arguments map[string]any) (string, 
 		}
 		requireInInbox = parsed
 	}
+	requireNoUserLabels := existing.RequireNoUserLabels
+	if raw, exists := arguments["require_no_user_labels"]; exists {
+		parsed, parsedOK := optionalBoolArgument(raw)
+		if !parsedOK {
+			return "", errors.New("require_no_user_labels must be a boolean")
+		}
+		requireNoUserLabels = parsed
+	}
 	labelNames := existing.LabelNames
 	if raw, exists := arguments["label_names"]; exists {
 		labelNames = stringSliceArgument(raw)
 	}
-	item, err := a.updateScheduledTask(id, title, instruction, enabled, requireInInbox, labelNames, "tool")
+	item, err := a.updateScheduledTask(id, title, instruction, enabled, requireInInbox, requireNoUserLabels, labelNames, "tool")
 	if err != nil {
 		return "", err
 	}
@@ -848,7 +918,7 @@ func (a *App) handleScheduledTasks(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		item, err := a.createScheduledTask(payload.Title, payload.Instruction, payload.Enabled, payload.RequireInInbox, payload.LabelNames, "api")
+		item, err := a.createScheduledTask(payload.Title, payload.Instruction, payload.Enabled, payload.RequireInInbox, payload.RequireNoUserLabels, payload.LabelNames, "api")
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -905,7 +975,7 @@ func (a *App) handleScheduledTaskItem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	item, err := a.updateScheduledTask(id, payload.Title, payload.Instruction, payload.Enabled, payload.RequireInInbox, payload.LabelNames, "api")
+	item, err := a.updateScheduledTask(id, payload.Title, payload.Instruction, payload.Enabled, payload.RequireInInbox, payload.RequireNoUserLabels, payload.LabelNames, "api")
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "scheduled task not found")
@@ -1064,7 +1134,9 @@ func (a *App) listScheduledTaskEmailCandidates(messageIDs []string) ([]scheduled
 			COALESCE(se.internal_date, ''),
 			COALESCE(se.internal_date_unix, 0),
 			COALESCE(se.is_in_inbox, 0),
-			COALESCE(sel.label_name, '')
+			COALESCE(sel.label_id, ''),
+			COALESCE(sel.label_name, ''),
+			COALESCE(sel.label_type, '')
 		FROM synced_emails se
 		LEFT JOIN synced_email_labels_with_names sel ON sel.message_id = se.message_id
 		WHERE se.is_deleted = 0 AND se.message_id IN (`+placeholders+`)
@@ -1087,8 +1159,10 @@ func (a *App) listScheduledTaskEmailCandidates(messageIDs []string) ([]scheduled
 		var internalDate string
 		var internalDateUnix int64
 		var isInInbox int
+		var labelID string
 		var labelName string
-		if err := rows.Scan(&messageID, &threadID, &historyID, &subject, &snippet, &fromName, &fromEmail, &internalDate, &internalDateUnix, &isInInbox, &labelName); err != nil {
+		var labelType string
+		if err := rows.Scan(&messageID, &threadID, &historyID, &subject, &snippet, &fromName, &fromEmail, &internalDate, &internalDateUnix, &isInInbox, &labelID, &labelName, &labelType); err != nil {
 			return nil, err
 		}
 		candidate, ok := candidateByID[messageID]
@@ -1108,7 +1182,7 @@ func (a *App) listScheduledTaskEmailCandidates(messageIDs []string) ([]scheduled
 			candidateByID[messageID] = candidate
 			ordered = append(ordered, messageID)
 		}
-		if strings.TrimSpace(labelName) != "" {
+		if strings.TrimSpace(labelName) != "" && isUserCreatedGmailLabel(labelID, labelName, labelType) {
 			candidate.LabelNames = append(candidate.LabelNames, labelName)
 		}
 	}
@@ -1127,8 +1201,13 @@ func (a *App) listScheduledTaskEmailCandidates(messageIDs []string) ([]scheduled
 func filterScheduledTaskCandidates(task ScheduledTaskItem, candidates []scheduledTaskEmailCandidate) []scheduledTaskEmailCandidate {
 	matched := make([]scheduledTaskEmailCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if task.RequireInInbox && !candidate.IsInInbox && !hasLabel(candidate.LabelNames, "INBOX") {
+		if task.RequireInInbox && !candidate.IsInInbox {
 			continue
+		}
+		if task.RequireNoUserLabels {
+			if !candidate.IsInInbox || len(candidate.LabelNames) > 0 {
+				continue
+			}
 		}
 		if len(task.LabelNames) > 0 {
 			labelMatched := false

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -28,7 +29,6 @@ type DBQueryResponse struct {
 	Notes     []string         `json:"notes,omitempty"`
 }
 
-var allowedDBStatementPrefix = regexp.MustCompile(`(?is)^\s*(select|with|pragma|explain)\b`)
 var outerLimitedDBStatementPrefix = regexp.MustCompile(`(?is)^\s*(select|with)\b`)
 
 const defaultQueryDBToolLimit = 200
@@ -162,7 +162,19 @@ func (a *App) executeSafeDBQuery(rawSQL string, maxRows int) (DBQueryResponse, e
 		querySQL = fmt.Sprintf("SELECT * FROM (%s) LIMIT %d", normalizedSQL, maxRows+1)
 		enforcedLimit = true
 	}
-	rows, err := a.db.Query(querySQL)
+	ctx := context.Background()
+	conn, err := a.db.Conn(ctx)
+	if err != nil {
+		return DBQueryResponse{}, err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `PRAGMA query_only = ON`); err != nil {
+		return DBQueryResponse{}, err
+	}
+	defer func() {
+		_, _ = conn.ExecContext(context.Background(), `PRAGMA query_only = OFF`)
+	}()
+	rows, err := conn.QueryContext(ctx, querySQL)
 	if err != nil {
 		return DBQueryResponse{}, err
 	}
@@ -225,15 +237,12 @@ func validateSafeDBQuery(rawSQL string) error {
 		return fmt.Errorf("sql is required")
 	}
 	if strings.Count(value, ";") > 1 || (strings.Contains(value, ";") && !strings.HasSuffix(value, ";")) {
-		return fmt.Errorf("only a single read-only SQL statement is allowed")
-	}
-	if !allowedDBStatementPrefix.MatchString(value) {
-		return fmt.Errorf("only read-only SELECT, WITH, PRAGMA, or EXPLAIN queries are allowed")
+		return fmt.Errorf("only a single SQL statement is allowed")
 	}
 	lower := strings.ToLower(value)
-	for _, forbidden := range []string{"insert ", "update ", "delete ", "drop ", "alter ", "create ", "replace ", "attach ", "detach ", "vacuum ", "reindex ", "begin ", "commit ", "rollback ", "secret_records", "user_sessions", "conversation_messages", "conversations", "custom_agents", "preferences", "memories", "memory_embeddings", "memory_embedding_index", "setup_state"} {
+	for _, forbidden := range []string{"secret_records", "user_sessions", "conversation_messages", "conversations", "custom_agents", "preferences", "memories", "memory_embeddings", "memory_embedding_index", "setup_state"} {
 		if strings.Contains(lower, forbidden) {
-			return fmt.Errorf("query contains a forbidden keyword or table reference: %s", strings.TrimSpace(forbidden))
+			return fmt.Errorf("query contains a forbidden table reference: %s", strings.TrimSpace(forbidden))
 		}
 	}
 	return nil
@@ -347,14 +356,15 @@ func (a *App) buildQueryDBToolDefinition() GmailToolDefinition {
 			"Example label filter: `SELECT message_id, subject FROM synced_emails WHERE EXISTS (SELECT 1 FROM json_each(synced_emails.label_ids) AS label WHERE label.value = 'INBOX') ORDER BY internal_date_unix DESC`.",
 			fmt.Sprintf("This tool automatically applies an outer row cap of %d when `limit` is omitted. For ordinary SELECT or WITH queries, the runtime enforces it as `SELECT * FROM (<your_sql>) LIMIT %d`, so you usually do not need to add a raw LIMIT yourself unless you want custom pagination or a smaller page.", defaultQueryDBToolLimit, defaultQueryDBToolLimit),
 			"If you need pagination, write the SQL explicitly with LIMIT and OFFSET in your query and optionally also pass `limit` so the tool output budget matches your intended page size.",
-			"Keep queries read-only and relevant to the synced email cache. Prefer WHERE clauses, deterministic ORDER BY clauses, and pagination when result sets may be large.",
+			"Execution runs with SQLite query_only enabled; write statements are not prefiltered by keyword, but SQLite rejects mutations at execution time.",
+			"Keep queries relevant to the synced email cache. Prefer WHERE clauses, deterministic ORDER BY clauses, and pagination when result sets may be large.",
 		}, " "),
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"sql": map[string]any{
 					"type":        "string",
-					"description": "A single read-only SQL query against email_sync_state, synced_emails, synced_email_attachments, or synced_email_labels_with_names.",
+					"description": "A single SQL query against email_sync_state, synced_emails, synced_email_attachments, email_embeddings, or synced_email_labels_with_names. The runtime executes it with SQLite query_only enabled.",
 				},
 				"limit": map[string]any{
 					"type":        "integer",

@@ -1807,6 +1807,13 @@ label span {
   font-size: 0.9375rem;
 }
 
+.scheduled-task-title-input:disabled,
+.scheduled-task-label-input:disabled {
+  color: var(--color-text-secondary);
+  background: rgba(15, 23, 42, 0.04);
+  cursor: not-allowed;
+}
+
 .scheduled-task-compose-textarea {
   min-height: 120px;
 }
@@ -1822,6 +1829,15 @@ label span {
   position: absolute;
   opacity: 0;
   pointer-events: none;
+}
+
+.scheduled-task-toggle-input:disabled + .scheduled-task-toggle-track,
+.scheduled-task-toggle-input:disabled ~ .scheduled-task-toggle-label {
+  cursor: not-allowed;
+}
+
+.scheduled-task-toggle-input:disabled + .scheduled-task-toggle-track {
+  opacity: 0.7;
 }
 
 .scheduled-task-toggle-track {

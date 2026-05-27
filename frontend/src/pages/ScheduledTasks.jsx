@@ -117,7 +117,8 @@ function createEmptyTaskForm() {
     title: '',
     instruction: '',
     labelNamesText: '',
-    requireInInbox: false
+    requireInInbox: false,
+    requireNoUserLabels: false
   }
 }
 
@@ -271,7 +272,8 @@ function ScheduledTasks() {
       title: task.title || '',
       instruction: task.instruction || '',
       labelNamesText: labelNamesToText(task.label_names),
-      requireInInbox: Boolean(task.require_in_inbox)
+      requireInInbox: Boolean(task.require_in_inbox || task.require_no_user_labels),
+      requireNoUserLabels: Boolean(task.require_no_user_labels)
     })
   }
 
@@ -300,8 +302,9 @@ function ScheduledTasks() {
           title,
           instruction,
           enabled: true,
-          require_in_inbox: newTask.requireInInbox,
-          label_names: parseLabelNames(newTask.labelNamesText)
+          require_in_inbox: newTask.requireInInbox || newTask.requireNoUserLabels,
+          require_no_user_labels: newTask.requireNoUserLabels,
+          label_names: newTask.requireNoUserLabels ? [] : parseLabelNames(newTask.labelNamesText)
         })
       })
       await parseResponse(response)
@@ -337,8 +340,9 @@ function ScheduledTasks() {
           title,
           instruction,
           enabled: true,
-          require_in_inbox: editTask.requireInInbox,
-          label_names: parseLabelNames(editTask.labelNamesText)
+          require_in_inbox: editTask.requireInInbox || editTask.requireNoUserLabels,
+          require_no_user_labels: editTask.requireNoUserLabels,
+          label_names: editTask.requireNoUserLabels ? [] : parseLabelNames(editTask.labelNamesText)
         })
       })
       await parseResponse(response)
@@ -430,7 +434,7 @@ function ScheduledTasks() {
           ) : null}
         </div>
         <div className="note scheduled-tasks-note">
-          Scheduled tasks run automatically only on emails updated during history-based sync ticks, then optionally narrow by Inbox and label filters.
+          Scheduled tasks run automatically only on emails updated during history-based sync ticks, then optionally narrow by Inbox, Unlabelled, and label filters.
         </div>
       </div>
 
@@ -456,7 +460,8 @@ function ScheduledTasks() {
               <input
                 type="checkbox"
                 className="scheduled-task-toggle-input"
-                checked={newTask.requireInInbox}
+                checked={newTask.requireInInbox || newTask.requireNoUserLabels}
+                disabled={newTask.requireNoUserLabels}
                 onChange={(e) => setNewTask((previous) => ({ ...previous, requireInInbox: e.target.checked }))}
               />
               <span className="scheduled-task-toggle-track">
@@ -475,9 +480,27 @@ function ScheduledTasks() {
             <input
               className="scheduled-task-label-input"
               value={newTask.labelNamesText}
+              disabled={newTask.requireNoUserLabels}
               onChange={(e) => setNewTask((previous) => ({ ...previous, labelNamesText: e.target.value }))}
               placeholder="Labels filter, comma separated"
             />
+            <label className="scheduled-task-toggle-wrapper">
+              <input
+                type="checkbox"
+                className="scheduled-task-toggle-input"
+                checked={newTask.requireNoUserLabels}
+                onChange={(e) => setNewTask((previous) => ({
+                  ...previous,
+                  requireNoUserLabels: e.target.checked,
+                  requireInInbox: e.target.checked ? true : previous.requireInInbox,
+                  labelNamesText: e.target.checked ? '' : previous.labelNamesText
+                }))}
+              />
+              <span className="scheduled-task-toggle-track">
+                <span className="scheduled-task-toggle-thumb" />
+              </span>
+              <span className="scheduled-task-toggle-label">Unlabelled</span>
+            </label>
             <button
               type="button"
               className="memory-compose-submit scheduled-task-compose-submit"
@@ -502,7 +525,9 @@ function ScheduledTasks() {
             const labelNames = Array.isArray(task.label_names) ? task.label_names : []
             const runMessage = task.last_run_error || task.last_run_message || ''
             const filters = []
-            if (task.require_in_inbox) {
+            if (task.require_no_user_labels) {
+              filters.push('Unlabelled')
+            } else if (task.require_in_inbox) {
               filters.push('Inbox only')
             }
             if (labelNames.length > 0) {
@@ -535,7 +560,8 @@ function ScheduledTasks() {
                           <input
                             type="checkbox"
                             className="scheduled-task-toggle-input"
-                            checked={editTask.requireInInbox}
+                            checked={editTask.requireInInbox || editTask.requireNoUserLabels}
+                            disabled={editTask.requireNoUserLabels}
                             onChange={(e) => setEditTask((previous) => ({ ...previous, requireInInbox: e.target.checked }))}
                           />
                           <span className="scheduled-task-toggle-track">
@@ -549,12 +575,32 @@ function ScheduledTasks() {
                         value={editTask.instruction}
                         onChange={(e) => setEditTask((previous) => ({ ...previous, instruction: e.target.value }))}
                       />
-                      <input
-                        className="scheduled-task-label-input"
-                        value={editTask.labelNamesText}
-                        onChange={(e) => setEditTask((previous) => ({ ...previous, labelNamesText: e.target.value }))}
-                        placeholder="Labels filter, comma separated"
-                      />
+                      <div className="scheduled-task-label-row">
+                        <input
+                          className="scheduled-task-label-input"
+                          value={editTask.labelNamesText}
+                          disabled={editTask.requireNoUserLabels}
+                          onChange={(e) => setEditTask((previous) => ({ ...previous, labelNamesText: e.target.value }))}
+                          placeholder="Labels filter, comma separated"
+                        />
+                        <label className="scheduled-task-toggle-wrapper">
+                          <input
+                            type="checkbox"
+                            className="scheduled-task-toggle-input"
+                            checked={editTask.requireNoUserLabels}
+                            onChange={(e) => setEditTask((previous) => ({
+                              ...previous,
+                              requireNoUserLabels: e.target.checked,
+                              requireInInbox: e.target.checked ? true : previous.requireInInbox,
+                              labelNamesText: e.target.checked ? '' : previous.labelNamesText
+                            }))}
+                          />
+                          <span className="scheduled-task-toggle-track">
+                            <span className="scheduled-task-toggle-thumb" />
+                          </span>
+                          <span className="scheduled-task-toggle-label">Unlabelled</span>
+                        </label>
+                      </div>
                     </div>
                   ) : (
                     <>

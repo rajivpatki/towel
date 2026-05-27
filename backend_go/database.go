@@ -48,6 +48,7 @@ func (a *App) initDB() error {
 			instruction TEXT NOT NULL,
 			enabled INTEGER NOT NULL DEFAULT 1,
 			require_in_inbox INTEGER NOT NULL DEFAULT 0,
+			require_no_user_labels INTEGER NOT NULL DEFAULT 0,
 			label_names_json TEXT,
 			label_names_search_text TEXT,
 			last_run_started_at TEXT,
@@ -280,6 +281,9 @@ func (a *App) initDB() error {
 		return err
 	}
 	if err := a.ensureColumnExists("email_embeddings", "source_fingerprint", "TEXT"); err != nil {
+		return err
+	}
+	if err := a.ensureColumnExists("scheduled_tasks", "require_no_user_labels", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	return nil
