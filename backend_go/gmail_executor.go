@@ -193,6 +193,7 @@ func (a *App) gmailToolMapping() map[string]GmailToolFunc {
 	return map[string]GmailToolFunc{
 		"users.labels.list":             a.gmailUsersLabelsList,
 		"users.labels.create":           a.gmailUsersLabelsCreate,
+		"users.labels.update":           a.gmailUsersLabelsUpdate,
 		"users.drafts.create":           a.gmailUsersDraftsCreate,
 		"users.messages.list":           a.gmailUsersMessagesList,
 		"users.messages.get":            a.gmailUsersMessagesGet,
@@ -458,6 +459,37 @@ func (a *App) gmailUsersLabelsCreate(accessToken string, arguments map[string]an
 	}
 
 	req, err := http.NewRequest(http.MethodPost, gmailAPIBase+"/users/"+url.PathEscape(userID)+"/labels", strings.NewReader(string(body)))
+	if err != nil {
+		return "", 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	respBody, status, err := a.doGmailRequest(req)
+	if err != nil {
+		return "", status, err
+	}
+	return string(respBody), status, nil
+}
+
+// gmailUsersLabelsUpdate updates an existing user-created label.
+func (a *App) gmailUsersLabelsUpdate(accessToken string, arguments map[string]any) (string, int, error) {
+	userID := gmailUserID(arguments)
+	id, ok := arguments["id"].(string)
+	if !ok || id == "" {
+		return "", 0, errors.New("id is required")
+	}
+
+	payload := gmailBodyArguments(arguments, "userId", "id")
+	if len(payload) == 0 {
+		return "", 0, errors.New("at least one label field is required")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", 0, err
+	}
+
+	req, err := http.NewRequest(http.MethodPut, gmailAPIBase+"/users/"+url.PathEscape(userID)+"/labels/"+url.PathEscape(id), strings.NewReader(string(body)))
 	if err != nil {
 		return "", 0, err
 	}

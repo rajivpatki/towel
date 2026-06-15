@@ -92,6 +92,14 @@ func gmailFilterIDSchema() map[string]any {
 	))
 }
 
+func gmailLabelIDSchema() map[string]any {
+	return gmailStringSchema(gmailDescription(
+		"Opaque Gmail label identifier for one label resource. Use the `id` returned by `users.labels.list`; user-visible label names are not valid ids for update calls.",
+		`{"id":"Label_1234567890"}`,
+		`{"id":"Label_987654321"}`,
+	))
+}
+
 func gmailEmailAddressArraySchema(description string) map[string]any {
 	return gmailStringArraySchema(gmailDescription(
 		description,
@@ -166,6 +174,60 @@ var gmailToolDefinitions = []GmailToolDefinition{
 				),
 			},
 			"name",
+		),
+	},
+	{
+		Name:         "users.labels.update",
+		GmailActions: []string{"users.labels.update"},
+		Description: gmailDescription(
+			"Update an existing user-created Gmail label. Use this for renaming labels, moving labels in or out of nested paths by changing the name with `/`, or changing visibility and color. Do not use this on Gmail system labels, which cannot be modified.",
+			`{"userId":"me","id":"Label_1234567890","name":"Newsletters/Archive","labelListVisibility":"labelShow","messageListVisibility":"show"}`,
+			`{"userId":"me","id":"Label_1234567890","color":{"textColor":"#ffffff","backgroundColor":"#16a766"}}`,
+		),
+		SafetyModel: "safe_write",
+		Parameters: gmailObjectSchema(
+			"Parameters for `users.labels.update`. This schema covers the Gmail API path parameters and the label fields accepted by the update-label endpoint. Use `users.labels.list` first to resolve the label id and confirm it is a user-created label.",
+			map[string]any{
+				"userId": gmailUserIDSchema(),
+				"id":     gmailLabelIDSchema(),
+				"name": gmailStringSchema(gmailDescription(
+					"Replacement display name for the label. Use `/` in the name to reorganize nested label paths in Gmail's UI.",
+					`{"name":"Receipts/Tax"}`,
+					`{"name":"Projects/Alpha"}`,
+				)),
+				"messageListVisibility": gmailStringSchema(gmailDescription(
+					"Controls whether conversations with this label appear in the message list. Use `show` when the label should remain visible in conversation rows, or `hide` when the label is only for background classification.",
+					`{"messageListVisibility":"show"}`,
+					`{"messageListVisibility":"hide"}`,
+				), "show", "hide"),
+				"labelListVisibility": gmailStringSchema(gmailDescription(
+					"Controls how the label appears in Gmail's left navigation label list. `labelShow` always shows it, `labelShowIfUnread` shows it only when unread conversations exist, and `labelHide` keeps it out of the main list.",
+					`{"labelListVisibility":"labelShow"}`,
+					`{"labelListVisibility":"labelHide"}`,
+				), "labelShow", "labelShowIfUnread", "labelHide"),
+				"color": gmailObjectSchema(
+					gmailDescription(
+						"Optional replacement label color object. Gmail expects supported hex color values for both text and background, and invalid combinations may be rejected by the API.",
+						`{"color":{"textColor":"#ffffff","backgroundColor":"#16a766"}}`,
+						`{"color":{"textColor":"#434343","backgroundColor":"#fce8b2"}}`,
+					),
+					map[string]any{
+						"textColor": gmailStringSchema(gmailDescription(
+							"Foreground text color for the label chip, expressed as a hex string. Pick a value with enough contrast against the chosen background.",
+							`{"textColor":"#ffffff"}`,
+							`{"textColor":"#434343"}`,
+						)),
+						"backgroundColor": gmailStringSchema(gmailDescription(
+							"Background fill color for the label chip, expressed as a hex string supported by Gmail's palette.",
+							`{"backgroundColor":"#16a766"}`,
+							`{"backgroundColor":"#fce8b2"}`,
+						)),
+					},
+					"textColor",
+					"backgroundColor",
+				),
+			},
+			"id",
 		),
 	},
 	{
