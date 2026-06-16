@@ -74,6 +74,10 @@ func parseDatabasePath(databaseURL string, dataDir string) string {
 }
 
 func newApp(config Config) (*App, error) {
+	return newAccountApp(config, true)
+}
+
+func newAccountApp(config Config, startBackground bool) (*App, error) {
 	if err := os.MkdirAll(filepath.Dir(config.DatabasePath), 0o755); err != nil {
 		return nil, err
 	}
@@ -98,14 +102,31 @@ func newApp(config Config) (*App, error) {
 		db.Close()
 		return nil, err
 	}
-	appInstance = app
-	app.startEmailSyncLoop()
-	app.startEmailEmbeddingWorkers()
-	app.refreshMemoryEmbeddingsInBackground("startup", false)
-	if err := app.restartGoogleChatListener(); err != nil {
-		log.Printf("google chat listener not started: %v", err)
+	if appInstance == nil {
+		appInstance = app
+	}
+	if startBackground {
+		app.startEmailSyncLoop()
+		app.startEmailEmbeddingWorkers()
+		app.refreshMemoryEmbeddingsInBackground("startup", false)
+		if err := app.restartGoogleChatListener(); err != nil {
+			log.Printf("google chat listener not started: account=%s err=%v", config.AccountID, err)
+		}
 	}
 	return app, nil
+}
+
+func (a *App) close() error {
+	if a == nil || a.db == nil {
+		return nil
+	}
+	a.googleChatMu.Lock()
+	if a.googleChatCancel != nil {
+		a.googleChatCancel()
+		a.googleChatCancel = nil
+	}
+	a.googleChatMu.Unlock()
+	return a.db.Close()
 }
 
 func registerSQLiteDriver() {
@@ -134,15 +155,15 @@ func configureSQLiteConnection(conn *sqliteDriver.SQLiteConn) error {
 
 func main() {
 	config := loadConfig()
-	app, err := newApp(config)
+	serverApp, err := newAccountServer(config)
 	if err != nil {
 		log.Fatalf("failed to initialize backend: %v", err)
 	}
-	defer app.db.Close()
+	defer serverApp.close()
 
 	server := &http.Server{
 		Addr:              ":8000",
-		Handler:           app.routes(),
+		Handler:           serverApp.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

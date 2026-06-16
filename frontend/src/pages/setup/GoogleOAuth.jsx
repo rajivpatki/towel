@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useState, useMemo } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useToast } from '../../components/ToastProvider'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || `http://localhost:8000`
@@ -24,13 +24,28 @@ async function parseResponse(response) {
 
 function GoogleOAuth({ onStatusChange }) {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { showToast } = useToast()
-  const [form, setForm] = useState({ client_id: '', client_secret: '' })
+  const [status, setStatus] = useState(null)
+  const [form, setForm] = useState({ account_email: '', client_id: '', client_secret: '' })
   const [busy, setBusy] = useState(false)
+  const addingAccount = searchParams.get('add') === '1'
+  const needsAccountEmail = addingAccount || !status?.active_account_id
 
   const canSubmit = useMemo(() => {
-    return form.client_id.trim().length > 0 && form.client_secret.trim().length > 0
-  }, [form])
+    return (!needsAccountEmail || form.account_email.trim().length > 0) &&
+      form.client_id.trim().length > 0 &&
+      form.client_secret.trim().length > 0
+  }, [form, needsAccountEmail])
+
+  useEffect(() => {
+    fetch(`${apiBaseUrl}/api/setup/status`, {
+      credentials: 'include'
+    })
+      .then(parseResponse)
+      .then((data) => setStatus(data))
+      .catch(() => setStatus({}))
+  }, [])
 
   async function handleSubmit(event) {
     event.preventDefault()
@@ -41,6 +56,7 @@ function GoogleOAuth({ onStatusChange }) {
         headers: {
           'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify(form)
       })
       await parseResponse(response)
@@ -152,12 +168,22 @@ function GoogleOAuth({ onStatusChange }) {
 
         <form className="stack-form" onSubmit={handleSubmit}>
           <label>
+            <span>Gmail address</span>
+            <input
+              type="email"
+              value={form.account_email}
+              onChange={(e) => setForm((c) => ({ ...c, account_email: e.target.value }))}
+              placeholder="user@domain.com"
+              autoFocus={needsAccountEmail}
+            />
+          </label>
+          <label>
             <span>Client ID</span>
             <input
               value={form.client_id}
               onChange={(e) => setForm((c) => ({ ...c, client_id: e.target.value }))}
               placeholder="Paste your Google OAuth Client ID"
-              autoFocus
+              autoFocus={!needsAccountEmail}
             />
           </label>
           <label>

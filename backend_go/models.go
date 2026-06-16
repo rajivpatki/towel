@@ -13,6 +13,7 @@ type Config struct {
 	APIPrefix        string
 	DatabaseURL      string
 	DatabasePath     string
+	AccountID        string
 	DataDir          string
 	PublicAPIBaseURL string
 	CORSOrigins      []string
@@ -108,6 +109,9 @@ type SetupState struct {
 }
 
 type SetupStatus struct {
+	AccountID              string                `json:"account_id,omitempty"`
+	ActiveAccountID        string                `json:"active_account_id,omitempty"`
+	Accounts               []AccountSummary      `json:"accounts,omitempty"`
 	GoogleClientConfigured bool                  `json:"google_client_configured"`
 	GoogleAccountConnected bool                  `json:"google_account_connected"`
 	GoogleEmail            *string               `json:"google_email"`
@@ -121,11 +125,31 @@ type SetupStatus struct {
 	GmailTools             []GmailToolDefinition `json:"gmail_tools"`
 }
 
+type AccountSummary struct {
+	AccountID              string  `json:"account_id"`
+	Email                  *string `json:"email,omitempty"`
+	Name                   *string `json:"name,omitempty"`
+	Picture                *string `json:"picture,omitempty"`
+	GoogleAccountConnected bool    `json:"google_account_connected"`
+	OnboardingCompleted    bool    `json:"onboarding_completed"`
+	Active                 bool    `json:"active"`
+}
+
+type AccountSwitchIn struct {
+	AccountID string `json:"account_id"`
+}
+
+type AccountSwitchOut struct {
+	Success bool        `json:"success"`
+	Status  SetupStatus `json:"status"`
+}
+
 type SuccessResponse struct {
 	Success bool `json:"success"`
 }
 
 type GoogleOAuthCredentialsIn struct {
+	AccountEmail string `json:"account_email,omitempty"`
 	ClientID     string `json:"client_id"`
 	ClientSecret string `json:"client_secret"`
 }

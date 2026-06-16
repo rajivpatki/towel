@@ -68,7 +68,9 @@ function LLMConfig({ onStatusChange }) {
   }
 
   async function loadStatus() {
-    const response = await fetch(`${apiBaseUrl}/api/setup/status`)
+    const response = await fetch(`${apiBaseUrl}/api/setup/status`, {
+      credentials: 'include'
+    })
     const data = await parseResponse(response)
     setStatus(data)
 
@@ -105,6 +107,7 @@ function LLMConfig({ onStatusChange }) {
         headers: {
           'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify({
           agent_id: selectedAgent.agent_id,
           api_key: form.api_key
@@ -137,6 +140,7 @@ function LLMConfig({ onStatusChange }) {
         headers: {
           'Content-Type': 'application/json'
         },
+        credentials: 'include',
         body: JSON.stringify({
           agent_id: geminiAgent.agent_id
         })

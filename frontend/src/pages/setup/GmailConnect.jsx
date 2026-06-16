@@ -31,7 +31,9 @@ function GmailConnect({ onStatusChange }) {
   const [polling, setPolling] = useState(false)
 
   const loadStatus = useCallback(async () => {
-    const response = await fetch(`${apiBaseUrl}/api/setup/status`)
+    const response = await fetch(`${apiBaseUrl}/api/setup/status`, {
+      credentials: 'include'
+    })
     const data = await parseResponse(response)
     setStatus(data)
     return data
@@ -97,7 +99,8 @@ function GmailConnect({ onStatusChange }) {
     setBusy(true)
     try {
       const response = await fetch(`${apiBaseUrl}/api/setup/google/connect`, {
-        method: 'POST'
+        method: 'POST',
+        credentials: 'include'
       })
       const data = await parseResponse(response)
       showToast({

@@ -32,6 +32,27 @@ func getAgentDefinition(agentID string) (AgentDefinition, bool) {
 	return AgentDefinition{}, false
 }
 
+func (a *App) getAgentDefinition(agentID string) (AgentDefinition, bool) {
+	for _, agent := range agentDefinitions {
+		if agent.AgentID == agentID {
+			agent.AuthMode = normalizeAgentAuthMode(agent.AuthMode, agent.Provider)
+			return agent, true
+		}
+	}
+	if a != nil {
+		agents, err := a.getCustomAgents()
+		if err == nil {
+			for _, agent := range agents {
+				if agent.AgentID == agentID {
+					agent.AuthMode = normalizeAgentAuthMode(agent.AuthMode, agent.Provider)
+					return agent, true
+				}
+			}
+		}
+	}
+	return AgentDefinition{}, false
+}
+
 func normalizeAgentAuthMode(authMode string, provider string) string {
 	mode := strings.ToLower(strings.TrimSpace(authMode))
 	if mode != "" {

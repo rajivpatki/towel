@@ -118,7 +118,7 @@ func (a *App) resolveSelectedAgentAndCredential() (AgentDefinition, string, erro
 	if state.SelectedAgentID == nil || strings.TrimSpace(*state.SelectedAgentID) == "" {
 		return AgentDefinition{}, "", errors.New("LLM not configured. Please complete setup first.")
 	}
-	agent, ok := getAgentDefinition(*state.SelectedAgentID)
+	agent, ok := a.getAgentDefinition(*state.SelectedAgentID)
 	if !ok {
 		return AgentDefinition{}, "", fmt.Errorf("Unsupported agent: %s", *state.SelectedAgentID)
 	}
@@ -245,7 +245,7 @@ func (a *App) executeToolCallsParallel(ctx context.Context, agent AgentDefinitio
 }
 
 func (a *App) callLLM(ctx context.Context, agent AgentDefinition, apiKey string, messages []map[string]any, emitProgress func(string, []string), subagentDepth int) (string, []string, error) {
-	toolDefinitions := allToolDefinitionsSnapshot()
+	toolDefinitions := a.allToolDefinitions()
 	tools := buildLLMToolsPayload(toolDefinitions)
 	toolDefinitionsByFunctionName := indexToolDefinitionsByFunctionName(toolDefinitions)
 	actions := make([]string, 0)

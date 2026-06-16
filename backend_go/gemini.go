@@ -174,7 +174,7 @@ func interpretGeminiSetupFailure(statusCode int, body []byte) GeminiSetupOut {
 
 func (a *App) callGeminiLLM(ctx context.Context, agent AgentDefinition, accessToken string, systemPrompt string, history []ConversationMessage, emitProgress func(string, []string), subagentDepth int) (string, []string, error) {
 	contents := buildGeminiConversation(history)
-	toolDefinitions := allToolDefinitionsSnapshot()
+	toolDefinitions := a.allToolDefinitions()
 	tools := buildGeminiToolsPayload(toolDefinitions)
 	toolDefinitionsByFunctionName := indexToolDefinitionsByFunctionName(toolDefinitions)
 	actions := make([]string, 0)

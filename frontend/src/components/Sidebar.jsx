@@ -117,12 +117,13 @@ function TrashIcon() {
   )
 }
 
-function Sidebar({ status }) {
+function Sidebar({ status, onStatusChange }) {
   const navigate = useNavigate()
   const location = useLocation()
   const chatMatch = useMatch('/chat/:conversationId')
   const currentConversationId = chatMatch?.params?.conversationId || ''
   const [isChatOpen, setIsChatOpen] = useState(true)
+  const [isAccountOpen, setIsAccountOpen] = useState(false)
   const [conversations, setConversations] = useState([])
   const [page, setPage] = useState(0)
   const [hasMore, setHasMore] = useState(false)
@@ -201,25 +202,93 @@ function Sidebar({ status }) {
     }
   }
 
+  async function handleSwitchAccount(accountId) {
+    if (!accountId || accountId === status?.active_account_id) {
+      setIsAccountOpen(false)
+      return
+    }
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/accounts/switch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({ account_id: accountId })
+      })
+      const data = await parseResponse(response)
+      const freshStatus = await onStatusChange?.()
+      setIsAccountOpen(false)
+      setConversations([])
+      window.dispatchEvent(new Event(conversationRefreshEvent))
+      if (data?.status?.onboarding_completed || freshStatus?.onboarding_completed) {
+        navigate('/chat')
+      } else {
+        navigate('/setup/google')
+      }
+    } catch (err) {
+      console.error('Failed to switch account:', err)
+    }
+  }
+
+  function handleAddAccount() {
+    setIsAccountOpen(false)
+    navigate('/setup/google?add=1')
+  }
+
   const profileName = status?.google_name || status?.google_email || 'Towel User'
-  const profilePicture = status?.google_account_connected ? `${apiBaseUrl}/api/profile/image` : ''
+  const profilePicture = status?.google_account_connected ? `${apiBaseUrl}/api/profile/image?account=${encodeURIComponent(status?.active_account_id || status?.account_id || '')}` : ''
   const chatIsActive = location.pathname === '/chat' || location.pathname.startsWith('/chat/')
+  const accounts = Array.isArray(status?.accounts) ? status.accounts : []
 
   return (
     <aside className="sidebar">
       <div className="sidebar-header">
-        <div className="sidebar-profile">
-          {profilePicture ? (
-            <img className="sidebar-profile-photo" src={profilePicture} alt={profileName} />
-          ) : (
-            <div className="sidebar-profile-photo sidebar-profile-fallback">{profileFallback(profileName)}</div>
-          )}
-          <span className="sidebar-profile-name" title={profileName}>{profileName}</span>
+        <div className="sidebar-account">
+          <button type="button" className="sidebar-profile" onClick={() => setIsAccountOpen((value) => !value)} aria-expanded={isAccountOpen}>
+            {profilePicture ? (
+              <img className="sidebar-profile-photo" src={profilePicture} alt={profileName} />
+            ) : (
+              <div className="sidebar-profile-photo sidebar-profile-fallback">{profileFallback(profileName)}</div>
+            )}
+            <span className="sidebar-profile-name" title={profileName}>{profileName}</span>
+            <span className={`sidebar-account-chevron${isAccountOpen ? ' open' : ''}`} aria-hidden="true"><ChevronIcon /></span>
+          </button>
+          {isAccountOpen ? (
+            <div className="account-menu">
+              {accounts.map((account) => {
+                const accountName = account.name || account.email || account.account_id
+                const pictureUrl = account.google_account_connected ? account.picture || '' : ''
+                return (
+                  <button
+                    key={account.account_id}
+                    type="button"
+                    className={`account-menu-item${account.active ? ' active' : ''}`}
+                    onClick={() => handleSwitchAccount(account.account_id)}
+                  >
+                    {pictureUrl ? (
+                      <img className="account-menu-photo" src={pictureUrl} alt={accountName} />
+                    ) : (
+                      <span className="account-menu-photo account-menu-fallback">{profileFallback(accountName)}</span>
+                    )}
+                    <span className="account-menu-text">
+                      <span className="account-menu-name">{accountName}</span>
+                      {account.email ? <span className="account-menu-email">{account.email}</span> : null}
+                    </span>
+                  </button>
+                )
+              })}
+              <button type="button" className="account-menu-add" onClick={handleAddAccount}>
+                <span className="account-menu-add-icon">+</span>
+                <span>Add account</span>
+              </button>
+            </div>
+          ) : null}
         </div>
+        <button type="button" className="sidebar-new-chat-button" aria-label="New chat" onClick={handleNewChat}>
+          <NewChatIcon />
+        </button>
       </div>
-      <button type="button" className="sidebar-new-chat-button" aria-label="New chat" onClick={handleNewChat}>
-        <NewChatIcon />
-      </button>
       <nav className="sidebar-nav">
         <div className={`sidebar-section${chatIsActive ? ' active' : ''}`}>
           <div className="sidebar-section-header">

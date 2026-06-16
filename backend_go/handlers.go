@@ -32,6 +32,147 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
 }
 
+func (s *AccountServer) handleRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"name": s.config.AppName, "status": "ok"})
+}
+
+func (s *AccountServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "healthy"})
+}
+
+func (s *AccountServer) handleAccounts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	_, activeAccountID := s.selectedAccount(r)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"active_account_id": activeAccountID,
+		"accounts":          s.accountSummaries(activeAccountID),
+	})
+}
+
+func (s *AccountServer) handleAccountSwitch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var payload AccountSwitchIn
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	accountID := strings.TrimSpace(payload.AccountID)
+	app, ok := s.accountByID(accountID)
+	if !ok {
+		writeError(w, http.StatusNotFound, "account not found")
+		return
+	}
+	setAccountCookie(w, accountID)
+	state, err := app.getSetupState()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if state.GoogleAccountConnected && state.GoogleEmail != nil {
+		name := ""
+		picture := ""
+		if state.GoogleName != nil {
+			name = *state.GoogleName
+		}
+		if state.GooglePicture != nil {
+			picture = *state.GooglePicture
+		}
+		sessionID, err := app.createSession(*state.GoogleEmail, name, picture)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		setSessionCookie(w, sessionID)
+	}
+	status, err := app.buildSetupStatus()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	status.ActiveAccountID = accountID
+	status.Accounts = s.accountSummaries(accountID)
+	writeJSON(w, http.StatusOK, AccountSwitchOut{Success: true, Status: status})
+}
+
+func (s *AccountServer) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	app, accountID := s.selectedAccount(r)
+	if app == nil {
+		writeJSON(w, http.StatusOK, s.emptySetupStatus(accountID))
+		return
+	}
+	status, err := app.buildSetupStatus()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	status.ActiveAccountID = accountID
+	status.Accounts = s.accountSummaries(accountID)
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (s *AccountServer) handleSaveGoogleCredentials(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return
+	}
+	var payload GoogleOAuthCredentialsIn
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	payload.AccountEmail = strings.TrimSpace(payload.AccountEmail)
+	payload.ClientID = strings.TrimSpace(payload.ClientID)
+	payload.ClientSecret = strings.TrimSpace(payload.ClientSecret)
+	if len(payload.ClientID) < 10 || len(payload.ClientSecret) < 10 {
+		writeError(w, http.StatusBadRequest, "client_id and client_secret must each be at least 10 characters")
+		return
+	}
+	var app *App
+	accountID := ""
+	if payload.AccountEmail != "" {
+		var err error
+		app, accountID, err = s.getOrCreateAccountForEmail(payload.AccountEmail)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else {
+		app, accountID = s.selectedAccount(r)
+		if app == nil {
+			writeError(w, http.StatusBadRequest, "account_email is required when creating the first account")
+			return
+		}
+	}
+	if err := app.saveGoogleClientCredentials(payload.ClientID, payload.ClientSecret); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	setAccountCookie(w, accountID)
+	writeJSON(w, http.StatusOK, SuccessResponse{Success: true})
+}
+
 func (a *App) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
@@ -155,7 +296,7 @@ func (a *App) handleSaveGeminiSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("gemini setup request received: agent=%s", payload.AgentID)
-	agent, ok := getAgentDefinition(payload.AgentID)
+	agent, ok := a.getAgentDefinition(payload.AgentID)
 	if !ok {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("Unsupported agent: %s", payload.AgentID))
 		return
@@ -667,6 +808,8 @@ func (a *App) buildSetupStatus() (SetupStatus, error) {
 	availableAgents = append(availableAgents, agentDefinitions...)
 	availableAgents = append(availableAgents, customAgents...)
 	return SetupStatus{
+		AccountID:              a.config.AccountID,
+		ActiveAccountID:        a.config.AccountID,
 		GoogleClientConfigured: state.GoogleClientConfigured,
 		GoogleAccountConnected: state.GoogleAccountConnected,
 		GoogleEmail:            state.GoogleEmail,

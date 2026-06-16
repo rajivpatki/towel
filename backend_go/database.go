@@ -411,7 +411,7 @@ func (a *App) saveGoogleProfile(email string, name string, picture string) error
 }
 
 func (a *App) saveLLMCredentials(agentID string, apiKey string) error {
-	agent, ok := getAgentDefinition(agentID)
+	agent, ok := a.getAgentDefinition(agentID)
 	if !ok {
 		return fmt.Errorf("Unsupported agent: %s", agentID)
 	}
@@ -425,7 +425,7 @@ func (a *App) saveLLMCredentials(agentID string, apiKey string) error {
 }
 
 func (a *App) saveGeminiSelection(agentID string) error {
-	agent, ok := getAgentDefinition(agentID)
+	agent, ok := a.getAgentDefinition(agentID)
 	if !ok {
 		return fmt.Errorf("Unsupported agent: %s", agentID)
 	}
@@ -443,7 +443,7 @@ func (a *App) saveSelectedAgent(agent AgentDefinition) error {
 	previousEmbeddingConfig := emailEmbeddingConfig{}
 	previousEmbeddingSupported := false
 	if previousState.SelectedAgentID != nil && strings.TrimSpace(*previousState.SelectedAgentID) != "" {
-		if previousAgent, ok := getAgentDefinition(strings.TrimSpace(*previousState.SelectedAgentID)); ok {
+		if previousAgent, ok := a.getAgentDefinition(strings.TrimSpace(*previousState.SelectedAgentID)); ok {
 			previousEmbeddingConfig, previousEmbeddingSupported = resolveEmailEmbeddingConfig(previousAgent)
 		}
 	}
@@ -470,7 +470,7 @@ func (a *App) isLLMConfigured(state SetupState) (bool, error) {
 	if state.SelectedAgentID == nil || strings.TrimSpace(*state.SelectedAgentID) == "" {
 		return false, nil
 	}
-	agent, ok := getAgentDefinition(*state.SelectedAgentID)
+	agent, ok := a.getAgentDefinition(*state.SelectedAgentID)
 	if !ok {
 		return false, nil
 	}
@@ -549,7 +549,7 @@ func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []Sett
 	if selectedAgentID != nil {
 		selected = strings.TrimSpace(*selectedAgentID)
 	}
-	selectedAgent, hasSelectedAgent := getAgentDefinition(selected)
+	selectedAgent, hasSelectedAgent := a.getAgentDefinition(selected)
 	shouldStoreAPIKey := trimmedAPIKey != "" && (!hasSelectedAgent || agentUsesAPIKey(selectedAgent))
 	if shouldStoreAPIKey {
 		if err := a.upsertSecret("llm_api_key", trimmedAPIKey); err != nil {
@@ -566,7 +566,7 @@ func (a *App) saveSettings(selectedAgentID *string, apiKey string, agents []Sett
 		}
 	}
 	if selected != "" {
-		agent, ok := getAgentDefinition(selected)
+		agent, ok := a.getAgentDefinition(selected)
 		if !ok {
 			return fmt.Errorf("Unsupported agent: %s", selected)
 		}

@@ -90,7 +90,9 @@ function App() {
 
   const loadStatus = useCallback(async () => {
     try {
-      const response = await fetch(`${apiBaseUrl}/api/setup/status`)
+      const response = await fetch(`${apiBaseUrl}/api/setup/status`, {
+        credentials: 'include'
+      })
       const data = await parseResponse(response)
       setStatus(data)
       return data

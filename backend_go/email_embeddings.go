@@ -143,7 +143,7 @@ func (a *App) resolveCurrentEmailEmbeddingConfig() (AgentDefinition, emailEmbedd
 	if state.SelectedAgentID == nil || strings.TrimSpace(*state.SelectedAgentID) == "" {
 		return AgentDefinition{}, emailEmbeddingConfig{}, "", false, nil
 	}
-	agent, ok := getAgentDefinition(strings.TrimSpace(*state.SelectedAgentID))
+	agent, ok := a.getAgentDefinition(strings.TrimSpace(*state.SelectedAgentID))
 	if !ok {
 		return AgentDefinition{}, emailEmbeddingConfig{}, "", false, nil
 	}
